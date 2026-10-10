@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>agent-speed</title>
+<style>
+  @font-face { font-family:"Paper Mono"; src:url(/*FONT*/) format("woff2"); font-weight:100 900; font-display:block; }
+  /* Phases of a call's wall time: waiting in stone, decoding in ink, stalls in rust. Providers take hues outside that range. */
+  :root { --bg:#fbfaf7; --fg:#1d1d1b; --mute:#77756e; --line:#dedbd2;
+    --ttftFloor:#cdc7b9; --ttftVariance:#a39b8b; --decoding:#2e2e2b; --stallDuring:#b8574a; --stallAfter:#e6b9ae; --unsplit:#2e2e2b;
+    --on-ttftFloor:#1d1d1b; --on-ttftVariance:#1d1d1b; --on-decoding:#fbfaf7; --on-stallDuring:#fbfaf7; --on-stallAfter:#1d1d1b; --on-unsplit:#fbfaf7;
+    --held:#b8574a; --reason:#c98a3a; --plain:#3d6fa8; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#191917; --fg:#e8e6df; --mute:#95938b; --line:#3a3934;
+    --ttftFloor:#4a463f; --ttftVariance:#6e685c; --decoding:#e8e6df; --unsplit:#e8e6df; --on-unsplit:#191917; --on-ttftFloor:#e8e6df; --on-ttftVariance:#e8e6df; --on-decoding:#191917; } }
+  body { margin:0; padding:24px 32px 64px; background:var(--bg); color:var(--fg); font:13px/1.5 "Paper Mono", ui-monospace, monospace; max-width:1180px; }
+  button, input, select { font-family:inherit; }
+  h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:15px; margin:32px 0 6px; } .m { color:var(--mute); }
+  .tabs button { font:inherit; border:1px solid var(--line); background:none; color:var(--fg); padding:4px 10px; margin:0 6px 6px 0; border-radius:4px; cursor:pointer; }
+  .tabs button.on { background:var(--fg); color:var(--bg); }
+  .cards { display:grid; grid-template-columns:repeat(5, 1fr); gap:12px; margin-top:12px; }
+  .card { border:1px solid var(--line); border-radius:6px; padding:10px 12px; }
+  .card b { font-size:22px; display:block; } .card .warn { color:var(--held); } .card b .warn { font-size:16px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:24px; }
+  svg { display:block; overflow:visible; } svg text { fill:var(--fg); font-size:11px; } svg .m { fill:var(--mute); } svg .ax { stroke:var(--line); }
+  .key span { display:inline-block; width:10px; height:10px; border-radius:2px; margin:0 4px 0 12px; vertical-align:-1px; }
+  table { border-collapse:collapse; font-size:12.5px; } td, th { padding:2px 8px; text-align:right; } td:first-child, th:first-child { text-align:left; }
+  .notes { font-size:12.5px; color:var(--mute); max-width:900px; }
+  code { font-size:12px; }
+</style>
+</head>
+<body>
+<h1>agent-speed</h1>
+<div class="m" id="head"></div>
+
+<h2>Where call time goes</h2>
+<div class="notes">Routes from fastest to slowest end-to-end speed. Each bar is the wall time of a call, request to end of response, split into its phases in time order and summed over the route's calls. TTFT floor: TTFT the context explains. TTFT variance: TTFT above the floor. Decoding: streaming time. Stall during decoding: pauses of 500 ms or more after the first token, which include hidden reasoning. Stall after last token: time from the last streamed update to the end of the response.</div>
+<div id="budget"></div>
+
+<h2>Route</h2>
+<div class="tabs" id="tabs"></div>
+<div class="cards" id="cards"></div>
+
+<div class="grid2">
+  <div><h2>TTFT against context</h2><div class="key m"><span style="background:var(--plain)"></span>no reasoning<span style="background:var(--reason)"></span>reasoning<span style="background:var(--held)"></span>held delivery<span style="background:var(--fg)"></span>TTFT floor fit and bin quantiles</div><div id="scatter"></div></div>
+  <div><h2>Decode speed</h2><div class="notes" id="decnote"></div><div id="dechist"></div></div>
+</div>
+<div class="grid2">
+  <div><h2>Daily medians</h2><div id="daily"></div></div>
+  <div><h2>Stalls during decoding per call</h2><div class="notes">Calls without reasoning. Share of calls by stall count.</div><div id="stallhist"></div></div>
+</div>
+
+<h2>Definitions and provenance</h2>
+<div class="notes" id="prov"></div>
+
+<script>
+// A written report.html embeds its report; the live view (--serve) leaves it null and polls.
+const REPORT = /*REPORT*/null;
+const POLL_MS = 30_000;
+let R = REPORT;
+const $ = (id) => document.getElementById(id);
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const s1 = (ms) => ms == null ? "–" : (ms / 1000).toFixed(1) + " s";
+const pct = (x) => x == null ? "–" : Math.round(x * 100) + "%";
+const f0 = (x) => x == null ? "–" : Math.round(x).toLocaleString("en-US");
+const P = { t:0, route:1, ctx:2, ttft:3, ttftFloor:4, decode:5, span:6, stall:7, stalls:8, held:9, reasoning:10, out:11, e2e:12 };
+let sel = 0;
+
+function head() {
+  const live = REPORT ? "" : ` · live, refreshed ${new Date().toLocaleTimeString()}`;
+  const by = R.sources.map((s) => `${s.adapter} ${s.calls.toLocaleString()}`).join(", ");
+  $("head").textContent = `${R.window.since.slice(0,16)} → ${R.window.until.slice(0,16)} UTC · ${R.source.calls.toLocaleString()} calls (${by}) · code ${R.codeVersion}${live}`;
+}
+
+// Provider hues stay clear of the phase colours (stone, ink, rust).
+const PROVIDER_HUES = { magpie: "#6c4fc4", "openai-codex": "#0f8f7f", codex: "#c2408a", gateway: "#b08900", anthropic: "#2f6fd6" };
+const SPARE_HUES = ["#4d7d1e", "#2f6fd6", "#6b6b66"];
+const providerOf = (route) => route.split("/")[0];
+const modelOf = (route) => route.split("/").slice(1).join("/");
+function hue(provider) {
+  if (!PROVIDER_HUES[provider]) PROVIDER_HUES[provider] = SPARE_HUES[Object.keys(PROVIDER_HUES).length % SPARE_HUES.length];
+  return PROVIDER_HUES[provider];
+}
+
+function budget() {
+  // Show a part only where some route has it (decoding incl. stalls is codex-only).
+  const parts = R.parts.filter(([k]) => R.routes.some((r) => r.summary.budget[k] > 0)), rows = [...R.routes].sort((a, b) => b.summary.e2e.p50 - a.summary.e2e.p50);
+  const W = 1120, rowH = 36, top = 46;
+  const colL = 0, colS = 210, sW = 200, colV = colS + sW + 14, colB = 520, bW = 470, colT = colB + bW + 12;
+  const H = top + rows.length * rowH + 40;
+  const smax = Math.max(...rows.map((r) => r.summary.e2e.p75)) * 1.05, slow = Math.min(...rows.map((r) => r.summary.e2e.p50));
+  const SX = (v) => colS + (v / smax) * sW, BX = (f) => colB + f * bW;
+  const step = smax > 150 ? 50 : smax > 60 ? 20 : 10;
+  let g = `<defs><pattern id="hatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="5" height="5" fill="${css("--ttftVariance")}"/><line x1="0" y1="0" x2="0" y2="5" stroke="${css("--ttftFloor")}" stroke-width="1.6"/></pattern>`
+    + `<pattern id="hatch2" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="${css("--unsplit")}"/><line x1="0" y1="0" x2="0" y2="6" stroke="${css("--stallDuring")}" stroke-width="2.2"/></pattern></defs>`;
+  const fill = (k) => (k === "ttftVariance" ? "url(#hatch)" : k === "unsplit" ? "url(#hatch2)" : css("--" + k));
+
+  // Headers. Speed: one shared scale. Time: an arrow from request to end of response.
+  g += `<text x="${colS}" y="12" font-weight="600">end-to-end speed</text><text class="m" x="${colS}" y="26">tok/s · dot p50, bar p25–p75</text>`;
+  g += `<text x="${colB}" y="12" font-weight="600">wall time of a call</text><text class="m" x="${colB + 136}" y="12">· % by phase, in time order</text>`;
+  g += `<line x1="${colB}" y1="${top - 12}" x2="${colB + bW}" y2="${top - 12}" stroke="${css("--fg")}" marker-end="url(#arrow)"/>`;
+  g += `<text class="m" x="${colB}" y="${top - 17}" font-size="10">request</text><text class="m" x="${colB + bW}" y="${top - 17}" font-size="10" text-anchor="end">end of response</text>`;
+  g += `<defs><marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="${css("--fg")}"/></marker></defs>`;
+  g += `<text x="${colT}" y="12" font-weight="600">per call</text><text class="m" x="${colT}" y="26">mean wall</text>`;
+  const yb = top + rows.length * rowH;
+  for (let v = 0; v <= smax; v += step) g += `<line class="ax" x1="${SX(v)}" y1="${top - 4}" x2="${SX(v)}" y2="${yb}" stroke-dasharray="${v ? "2 3" : ""}"/><text class="m" x="${SX(v)}" y="${yb + 14}" text-anchor="middle" font-size="10">${v}</text>`;
+  for (const f of [0, 0.25, 0.5, 0.75, 1]) g += `<line class="ax" x1="${BX(f)}" y1="${top - 4}" x2="${BX(f)}" y2="${yb}" stroke-dasharray="${f % 1 ? "2 3" : ""}"/><text class="m" x="${BX(f)}" y="${yb + 14}" text-anchor="middle" font-size="10">${pct(f)}</text>`;
+
+  rows.forEach((r, i) => {
+    const y = top + i * rowH, cy = y + rowH / 2, s = r.summary, e = s.e2e, b = s.budget, prov = providerOf(r.route), c = hue(prov);
+    const tot = parts.reduce((t, [k]) => t + b[k], 0);
+    if (i % 2) g += `<rect x="${colL}" y="${y}" width="${W}" height="${rowH}" fill="${css("--line")}" fill-opacity="0.25"/>`;
+    // Route: provider stripe, model, provider name.
+    g += `<rect x="${colL}" y="${y + 5}" width="3" height="${rowH - 10}" fill="${c}"/>`;
+    g += `<text x="${colL + 10}" y="${cy - 2}" font-weight="600">${modelOf(r.route)}</text><text x="${colL + 10}" y="${cy + 11}" font-size="10" fill="${c}" style="fill:${c}">${prov} · ${f0(s.calls)} calls</text>`;
+    // Speed: p25–p75 bar and p50 dot on the shared scale.
+    g += `<line x1="${SX(e.p25)}" y1="${cy}" x2="${SX(e.p75)}" y2="${cy}" stroke="${c}" stroke-opacity="0.35" stroke-width="7" stroke-linecap="round"><title>p25 ${f0(e.p25)} · p75 ${f0(e.p75)} tok/s</title></line>`;
+    g += `<circle cx="${SX(e.p50)}" cy="${cy}" r="5.5" fill="${c}" stroke="${css("--bg")}" stroke-width="1.5"><title>p50 ${f0(e.p50)} tok/s · pooled ${f0(e.pooled)}</title></circle>`;
+    g += `<text x="${colV}" y="${cy - 1}" font-weight="700" font-size="14">${f0(e.p50)}</text><text class="m" x="${colV}" y="${cy + 12}" font-size="10">${(e.p50 / slow).toFixed(1)}× slowest</text>`;
+    // Time: the call's phases in order.
+    let x = 0;
+    for (const [k, label] of parts) {
+      const f = b[k] / tot, w = f * bW;
+      g += `<rect x="${BX(x)}" y="${y + 7}" width="${Math.max(0, w - 1)}" height="${rowH - 14}" fill="${fill(k)}"><title>${label}: ${pct(f)} of wall time, ${s1(b[k] / s.calls)} per call</title></rect>`;
+      if (w > 30) g += `<text x="${BX(x) + 4}" y="${cy + 4}" style="fill:${css("--on-" + k)}" font-size="10.5">${pct(f)}</text>`;
+      x += f;
+    }
+    g += `<text x="${colT}" y="${cy + 4}">${s1(tot / s.calls)}</text>`;
+  });
+
+  // Phase key, in time order.
+  let kx = colB, ky = yb + 22;
+  for (const [k, label] of parts) {
+    const w = 24 + label.length * 6.4;
+    if (kx + w > W && kx > colB) (kx = colB), (ky += 16);
+    g += `<rect x="${kx}" y="${ky}" width="10" height="10" fill="${fill(k)}"/><text x="${kx + 14}" y="${ky + 9}" font-size="10.5">${label}</text>`;
+    kx += w;
+  }
+  $("budget").innerHTML = `<svg viewBox="0 0 ${W} ${Math.max(H, ky + 14) + 8}" width="100%">${g}</svg>`;
+}
+
+function tabs() {
+  $("tabs").innerHTML = R.routes.map((r, i) => `<button class="${i === sel ? "on" : ""}" data-i="${i}"><span style="color:${hue(providerOf(r.route))}">●</span> ${r.route} <span class="m">${r.summary.calls}</span></button>`).join("");
+  $("tabs").querySelectorAll("button").forEach((b) => b.onclick = () => { sel = +b.dataset.i; render(); });
+}
+
+function cards(r) {
+  const s = r.summary, d = s.decode, st = s.stalls;
+  const heldRoute = d.heldShare > R.constants.MAX_HELD;
+  const e = s.e2e;
+  $("cards").innerHTML = [
+    ["End-to-end p50", `${f0(e.p50)} tok/s`, `p25 ${f0(e.p25)}, p75 ${f0(e.p75)}; pooled ${f0(e.pooled)} over ${e.calls} calls`],
+    ["TTFT p50 / p90", `${s1(s.ttft.p50)} / ${s1(s.ttft.p90)}`, `TTFT floor ${s1(s.ttftFloor.atMedianCtx)} at ${f0(s.ttftFloor.medianCtx)} tokens; ×${s.ttftFloor.per100k.toFixed(2)} per 100k`],
+    ["TTFT variance p50", s1(s.ttftVariance.p50), `${pct(s.ttftVariance.share)} of TTFT time; without reasoning ${s1(s.ttftVariance.noReasoningP50)} (${s.ttftVariance.noReasoningCalls} calls)`],
+    ["Decode p50", d.identifiable ? `${f0(d.p50)} tok/s` : `<span class="warn">not identifiable</span>`, d.identifiable ? `p25 ${f0(d.p25)}, p75 ${f0(d.p75)}; ${d.calls} calls; ${pct(d.heldShare)} held` : d.reason === "held delivery" ? `${pct(d.heldShare)} of trusted windows held; ${d.calls} usable calls` : `${d.reason}: the source does not show the stream within a call`],
+    st.calls ? ["Stall during decoding", `${pct(st.stalledShare)} of calls`, `${st.perSpanMin?.toFixed(2) ?? "–"} per span-minute; ${pct(st.timeShare)} of span; p90 ${s1(st.p90Ms)}${heldRoute ? ' · <span class="warn">held delivery shows as stalls</span>' : ""}`]
+      : ["Stall during decoding", `<span class="warn">not seen</span>`, `no per-update timing: stalls are inside "decoding incl. stalls" (${s1(s.budget.unsplit / s.calls)} per call)`],
+  ].map(([k, v, n]) => `<div class="card"><span class="m">${k}</span><b>${v}</b><span class="m">${n}</span></div>`).join("");
+}
+
+function axes(W, H, m, xt, yt, xl, yl) {
+  let g = `<line class="ax" x1="${m.l}" y1="${H - m.b}" x2="${W - m.r}" y2="${H - m.b}"/><line class="ax" x1="${m.l}" y1="${m.t}" x2="${m.l}" y2="${H - m.b}"/>`;
+  for (const [x, s] of xt) g += `<line class="ax" x1="${x}" y1="${H - m.b}" x2="${x}" y2="${H - m.b + 4}"/><text class="m" x="${x}" y="${H - m.b + 16}" text-anchor="middle">${s}</text>`;
+  for (const [y, s] of yt) g += `<line class="ax" x1="${m.l - 4}" y1="${y}" x2="${W - m.r}" y2="${y}" stroke-dasharray="2 3"/><text class="m" x="${m.l - 6}" y="${y + 4}" text-anchor="end">${s}</text>`;
+  return g + `<text class="m" x="${(W + m.l) / 2}" y="${H - 2}" text-anchor="middle">${xl}</text><text class="m" transform="translate(12 ${(H - m.b + m.t) / 2}) rotate(-90)" text-anchor="middle">${yl}</text>`;
+}
+
+function scatter(r, pts) {
+  const W = 540, H = 360, m = { l: 52, r: 10, t: 10, b: 36 };
+  const xmax = Math.max(...pts.map((p) => p[P.ctx])) * 1.02;
+  const ys = pts.map((p) => p[P.ttft]), ylo = Math.log10(Math.max(100, Math.min(...ys))), yhi = Math.log10(Math.max(...ys));
+  const X = (c) => m.l + (c / xmax) * (W - m.l - m.r), Y = (ms) => H - m.b - ((Math.log10(ms) - ylo) / (yhi - ylo)) * (H - m.t - m.b);
+  const step = xmax > 200e3 ? 50e3 : 25e3;
+  const xt = []; for (let c = 0; c <= xmax; c += step) xt.push([X(c), `${c / 1000}k`]);
+  const yt = []; for (const v of [200, 500, 1e3, 2e3, 5e3, 1e4, 2e4, 5e4, 1e5]) if (Math.log10(v) >= ylo && Math.log10(v) <= yhi) yt.push([Y(v), v >= 1e3 ? `${v / 1e3} s` : `${v} ms`]);
+  let g = axes(W, H, m, xt, yt, "context tokens (cached + uncached)", "TTFT (log)");
+  for (const p of pts) {
+    const c = p[P.held] ? "--held" : p[P.reasoning] ? "--reason" : "--plain";
+    if (p[P.ttft] >= 10 ** ylo) g += `<circle cx="${X(p[P.ctx]).toFixed(1)}" cy="${Y(p[P.ttft]).toFixed(1)}" r="1.6" fill="${css(c)}" fill-opacity="0.35"/>`;
+  }
+  const f = r.fit; let d = "";
+  for (let i = 0; i <= 60; i++) { const c = (xmax * i) / 60; d += `${i ? "L" : "M"}${X(c).toFixed(1)},${Y(Math.exp(f.a + f.b * c)).toFixed(1)}`; }
+  g += `<path d="${d}" fill="none" stroke="${css("--fg")}" stroke-width="2"/>`;
+  for (const b of f.bins) g += `<circle cx="${X(b.x)}" cy="${Y(Math.exp(b.y))}" r="3.5" fill="${css("--bg")}" stroke="${css("--fg")}" stroke-width="1.5"><title>bin of ${b.n}: q10 ${s1(Math.exp(b.y))} at ${f0(b.x)} tokens</title></circle>`;
+  $("scatter").innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%">${g}</svg>`;
+}
+
+function hist(el, values, { W = 540, H = 260, log = false, bins = 30, xl, fmt, color = "--decoding", marks = [] }) {
+  const m = { l: 44, r: 10, t: 10, b: 36 };
+  if (!values.length) return (el.innerHTML = `<p class="m">No usable calls.</p>`);
+  const tr = log ? Math.log10 : (x) => x, inv = log ? (x) => 10 ** x : (x) => x;
+  const lo = tr(Math.min(...values)), hi = tr(Math.max(...values)) + 1e-9, w = (hi - lo) / bins;
+  const c = new Array(bins).fill(0); for (const v of values) c[Math.min(bins - 1, Math.floor((tr(v) - lo) / w))]++;
+  const cmax = Math.max(...c), X = (t) => m.l + ((t - lo) / (hi - lo)) * (W - m.l - m.r), Y = (n) => H - m.b - (n / cmax) * (H - m.t - m.b);
+  const xt = []; for (let i = 0; i <= 5; i++) { const t = lo + ((hi - lo) * i) / 5; xt.push([X(t), fmt(inv(t))]); }
+  let g = axes(W, H, m, xt, [[Y(cmax), pct(cmax / values.length)]], xl, "share of calls");
+  c.forEach((n, i) => g += `<rect x="${X(lo + i * w) + 0.5}" y="${Y(n)}" width="${Math.max(0, X(lo + w) - X(lo) - 1)}" height="${H - m.b - Y(n)}" fill="${css(color)}"/>`);
+  for (const [v, s] of marks) if (v != null) g += `<line x1="${X(tr(v))}" y1="${m.t}" x2="${X(tr(v))}" y2="${H - m.b}" stroke="${css("--fg")}" stroke-dasharray="3 3"/><text x="${X(tr(v)) + 4}" y="${m.t + 10}">${s}</text>`;
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%">${g}</svg>`;
+}
+
+function daily(r) {
+  const W = 540, h = 70, m = { l: 52, r: 10, t: 22, b: 12 };
+  const series = [["end-to-end p50", (d) => d.e2eP50, (x) => f0(x) + " tok/s", "--fg"], ["TTFT p50", (d) => d.ttftP50, s1, "--plain"], ["TTFT variance p50", (d) => d.ttftVarianceP50, s1, "--ttftVariance"], ["decode p50", (d) => d.decodeP50, (x) => f0(x) + " tok/s", "--decoding"], ["stall during decoding, share of span", (d) => d.stallShare, pct, "--stallDuring"]];
+  const days = r.daily.filter((d) => d.calls >= 10), t0 = days[0]?.day, t1 = days.at(-1)?.day;
+  let out = "";
+  for (const [name, get, fmt, c] of series) {
+    if (name === "decode p50" && !r.summary.decode.identifiable) continue;
+    const v = days.map(get).filter((x) => x != null); if (!v.length) continue;
+    const vmax = Math.max(...v) * 1.1, X = (t) => m.l + ((t - t0) / Math.max(1, t1 - t0)) * (W - m.l - m.r), Y = (x) => m.t + h - (x / vmax) * h;
+    let g = `<text x="${m.l}" y="12">${name}</text><line class="ax" x1="${m.l}" y1="${Y(vmax / 1.1)}" x2="${W - m.r}" y2="${Y(vmax / 1.1)}" stroke-dasharray="2 3"/><text class="m" x="${m.l - 6}" y="${Y(vmax / 1.1) + 4}" text-anchor="end">${fmt(vmax / 1.1)}</text><line class="ax" x1="${m.l}" y1="${m.t + h}" x2="${W - m.r}" y2="${m.t + h}"/>`;
+    let d = ""; for (const x of days) { const y = get(x); if (y == null) continue; d += `${d ? "L" : "M"}${X(x.day).toFixed(1)},${Y(y).toFixed(1)}`; g += `<circle cx="${X(x.day)}" cy="${Y(y)}" r="2.5" fill="${css(c)}"><title>${new Date(x.day).toISOString().slice(0,10)}: ${fmt(y)} (${x.calls} calls)</title></circle>`; }
+    out += `<svg viewBox="0 0 ${W} ${h + m.t + m.b}" width="100%">${g}<path d="${d}" fill="none" stroke="${css(c)}" stroke-width="1.5"/></svg>`;
+  }
+  if (days.length) out += `<div class="m" style="display:flex;justify-content:space-between;padding-left:${m.l}px;font-size:11px"><span>${new Date(t0).toISOString().slice(5,10)}</span><span>${new Date(t1).toISOString().slice(5,10)}</span></div>`;
+  $("daily").innerHTML = out;
+}
+
+function stallHist(pts) {
+  const el = pts.filter((p) => p[P.span] != null && !p[P.reasoning]);
+  if (!el.length) return ($("stallhist").innerHTML = `<p class="m">No calls without reasoning.</p>`);
+  const k = [0, 1, 2, 3, 5, 10], lab = ["0", "1", "2", "3–4", "5–9", "10+"], c = new Array(k.length).fill(0);
+  for (const p of el) { let i = k.length - 1; while (p[P.stalls] < k[i]) i--; c[i]++; }
+  const W = 540, H = 200, m = { l: 44, r: 10, t: 10, b: 36 }, bw = (W - m.l - m.r) / k.length, cmax = Math.max(...c);
+  let g = axes(W, H, m, lab.map((s, i) => [m.l + bw * (i + 0.5), s]), [], "stalls in the call", "");
+  c.forEach((n, i) => { const y = H - m.b - (n / cmax) * (H - m.t - m.b); g += `<rect x="${m.l + bw * i + 4}" y="${y}" width="${bw - 8}" height="${H - m.b - y}" fill="${css(i ? "--stallDuring" : "--ttftFloor")}"/><text x="${m.l + bw * (i + 0.5)}" y="${y - 4}" text-anchor="middle">${pct(n / el.length)}</text>`; });
+  $("stallhist").innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%">${g}</svg>`;
+}
+
+function prov() {
+  const c = R.constants, s = R.source;
+  $("prov").innerHTML = `<p>Formulas live in <code>src/metrics.mjs</code>; this page renders <code>report.json</code>.</p><ul>
+  <li><b>End-to-end</b>: all output tokens, reasoning included, over wall time from request start to the end of the response. Per-call quantiles; <i>pooled</i> is total output over total wall time.</li>
+  <li><b>TTFT</b>: request start to first streamed content of any kind, reasoning included. pi: as pi-tps measures it. codex: last input line to the first model item's start; Codex's own TTFT counts the first visible message instead.</li>
+  <li><b>TTFT floor</b>: ln TTFT = a + b·context, fitted to the ${c.FLOOR_Q} quantile of equal-count context bins. <b>TTFT variance</b> = TTFT − floor: queueing, stalls before the first token, hidden reasoning, or buffered generation.</li>
+  <li><b>Stall during decoding</b>: a pause of ${c.STALL_MS} ms or more between the first token and the last update. Hidden reasoning also shows as one, so stall statistics use calls without reasoning. <b>Stall after last token</b>: time from the last streamed update to the end of the response.</li>
+  <li><b>Decoding incl. stalls</b>: first content to the end of the call, where the source has no per-update timing. Codex rollouts time whole items; the Magpie ledger keeps only TTFT and the call's end.</li>
+  <li><b>gateway/…</b> routes: calls from the Magpie ledger that no session source has, timed at the gateway, so without the agent's own time.</li>
+  <li><b>Decoding</b>: the first token to the last update, less stalls. <b>Decode speed</b> = (output − reasoning) / decoding. Only calls whose stream window pi-tps trusts and that are not held.</li>
+  <li><b>Held delivery</b>: content flowed in under 1/${c.HELD_SHARE} of the call. A route above ${pct(c.MAX_HELD)} held calls has no identifiable decode speed.</li></ul>
+  <p>Sources: ${R.sources.map((x) => `<b>${x.adapter}</b> ${x.calls.toLocaleString()} calls from ${x.inWindow} files (skipped: ${JSON.stringify(x.skipped)})`).join("; ")}. Routes under ${c.MIN_CALLS} calls left out: ${s.excludedRoutes.map((r) => `${r.route} (${r.calls})`).join(", ") || "none"}.</p>`;
+}
+
+function render() {
+  const r = R.routes[sel], pts = R.points.filter((p) => p[P.route] === sel);
+  tabs(); cards(r); scatter(r, pts); daily(r); stallHist(pts);
+  const dec = pts.map((p) => p[P.decode]).filter((x) => x != null && x > 0);
+  const d = r.summary.decode;
+  $("decnote").innerHTML = d.identifiable ? `Visible tok/s per call, log scale. ${dec.length} calls.` : d.reason === "held delivery" ? `<span style="color:${css("--held")}">Not identifiable: ${pct(d.heldShare)} of trusted windows were held.</span> The bars show the remaining calls, which still overstate speed.` : `<span style="color:${css("--held")}">Not identifiable: ${d.reason}.</span>`;
+  hist($("dechist"), dec, { log: true, xl: "visible output tok/s", fmt: (x) => f0(x), marks: d.identifiable ? [[d.p50, `p50 ${f0(d.p50)}`]] : [] });
+}
+
+function all() { head(); budget(); prov(); render(); }
+
+async function poll() {
+  try {
+    const route = R?.routes[sel]?.route;
+    R = await (await fetch("report.json", { cache: "no-store" })).json();
+    sel = Math.max(0, R.routes.findIndex((r) => r.route === route));
+    all();
+  } catch (e) {
+    $("head").textContent += ` · refresh failed: ${e.message}`;
+  }
+}
+
+if (REPORT) all();
+else { poll(); setInterval(() => document.hidden || poll(), POLL_MS); }
+</script>
+</body>
+</html>

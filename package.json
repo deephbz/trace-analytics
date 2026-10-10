@@ -1,0 +1,12 @@
+{
+  "name": "agent-speed",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Measure TTFT floor and excess, decode speed, and stalls of coding-agent model calls.",
+  "type": "module",
+  "bin": { "agent-speed": "./bin/agent-speed.mjs" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "report": "node bin/agent-speed.mjs"
+  }
+}

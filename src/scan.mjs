@@ -1,0 +1,124 @@
+// Incremental scanner: session files -> rows, through a per-adapter index.
+//
+//   stat ─► size and mtime unchanged ─────────────────► reuse the file's rows
+//        ├► grew, same inode and head ────────────────► feed only the appended bytes
+//        └► new, shrank, or replaced ─────────────────► feed the whole file
+//
+// Agents append to session files, so a refresh costs the bytes written since the last
+// one. The index is a cache: its key holds a hash of this file and the adapter's
+// source, so a code change rebuilds it instead of serving rows from older logic.
+//
+// Adapter: { name, source (its module URL), list() -> paths, init(path) -> state,
+//            line(state, buf, start, end, emit) }. State must survive JSON.
+
+import { createHash } from "node:crypto";
+import { mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+export const CACHE_DIR = join(homedir(), ".cache", "agent-speed");
+const HEAD_BYTES = 64;
+const CHUNK = 1 << 20;
+
+async function codeKey(adapter) {
+  const h = createHash("sha256");
+  for (const u of [import.meta.url, adapter.source]) h.update(await readFile(fileURLToPath(u)));
+  return h.digest("hex").slice(0, 12);
+}
+
+// A long-lived process (the live view) keeps each index in memory between scans.
+const loaded = new Map();
+
+async function loadIndex(path, key) {
+  const held = loaded.get(path);
+  if (held?.key === key) return held;
+  let idx = { key, files: {} };
+  try {
+    const disk = JSON.parse(await readFile(path, "utf8"));
+    if (disk.key === key) idx = disk;
+  } catch {}
+  loaded.set(path, idx);
+  return idx;
+}
+
+async function readHead(fh) {
+  const b = Buffer.alloc(HEAD_BYTES);
+  const { bytesRead } = await fh.read(b, 0, HEAD_BYTES, 0);
+  return b.toString("latin1", 0, bytesRead);
+}
+
+/** Feed complete lines in [from, to) to onLine(buf, start, end). Returns the offset after the last newline. */
+async function feed(fh, from, to, onLine) {
+  let pos = from;
+  let carry = Buffer.alloc(0);
+  let consumed = from;
+  while (pos < to) {
+    const b = Buffer.allocUnsafe(Math.min(CHUNK, to - pos));
+    const { bytesRead } = await fh.read(b, 0, b.length, pos);
+    if (!bytesRead) break;
+    pos += bytesRead;
+    const buf = carry.length ? Buffer.concat([carry, b.subarray(0, bytesRead)]) : b.subarray(0, bytesRead);
+    let start = 0;
+    for (let nl; (nl = buf.indexOf(10, start)) !== -1; start = nl + 1) {
+      if (nl > start) onLine(buf, start, nl);
+    }
+    consumed = pos - (buf.length - start);
+    carry = Buffer.from(buf.subarray(start));
+  }
+  return consumed;
+}
+
+/** Bring the adapter's index up to date for files modified since sinceMs; return it with scan stats. */
+export async function scan(adapter, { sinceMs, cacheDir = CACHE_DIR, useCache = true } = {}) {
+  const started = performance.now();
+  const key = await codeKey(adapter);
+  const indexPath = join(cacheDir, `${adapter.name}.json`);
+  const index = useCache ? await loadIndex(indexPath, key) : { key, files: {} };
+  const paths = await adapter.list();
+  const stats = { files: paths.length, inWindow: 0, reused: 0, appended: 0, full: 0, bytes: 0 };
+  let dirty = false;
+
+  const queue = [...paths];
+  await Promise.all(
+    Array.from({ length: 8 }, async () => {
+      for (let path; (path = queue.shift()); ) {
+        const st = await stat(path).catch(() => null);
+        if (!st || st.mtimeMs < sinceMs) continue;
+        stats.inWindow++;
+        let e = index.files[path];
+        if (e && e.size === st.size && e.mtimeMs === st.mtimeMs) {
+          stats.reused++;
+          continue;
+        }
+        const fh = await open(path, "r");
+        try {
+          const head = await readHead(fh);
+          const grew = e && e.ino === st.ino && st.size >= e.offset && e.head === head;
+          if (grew) stats.appended++;
+          else {
+            stats.full++;
+            e = { ino: st.ino, head, offset: 0, rows: [], state: adapter.init(path) };
+          }
+          stats.bytes += st.size - e.offset;
+          e.offset = await feed(fh, e.offset, st.size, (buf, s, t) => adapter.line(e.state, buf, s, t, (row) => e.rows.push(row)));
+          e.size = st.size;
+          e.mtimeMs = st.mtimeMs;
+          index.files[path] = e;
+          dirty = true;
+        } finally {
+          await fh.close();
+        }
+      }
+    }),
+  );
+
+  if (useCache && dirty) {
+    await mkdir(cacheDir, { recursive: true });
+    const tmp = `${indexPath}.${process.pid}.tmp`;
+    await writeFile(tmp, JSON.stringify(index));
+    await rename(tmp, indexPath);
+  }
+  stats.ms = Math.round(performance.now() - started);
+  return { index, stats };
+}
