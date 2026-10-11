@@ -1,10 +1,10 @@
 # Publish the inference-physics explainer. index.html is built locally by
-# research/inference-physics/build.py from page.html and the numeric benchmark.json.
+# research/inference-physics/build.py from page.html and approved aggregates.json.
 name: pages
 on:
   push:
     branches: [main]
-    paths: [research/inference-physics/index.html, .github/workflows/pages.yml]
+    paths: ['research/inference-physics/**', .github/workflows/pages.yml]
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,6 +21,11 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - name: Verify aggregate-only artifact
+        run: |
+          python3 -I research/inference-physics/test_public_data.py
+          python3 -I research/inference-physics/build.py
+          git diff --exit-code -- research/inference-physics/index.html
       - run: mkdir site && cp research/inference-physics/index.html site/
       - uses: actions/upload-pages-artifact@v3
         with:
