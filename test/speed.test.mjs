@@ -1,7 +1,7 @@
-// Checks for the two estimates the report rests on.
+// Checks for the two estimates the speed report rests on.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decode, fitFloor, floorAt, held } from "../src/metrics.mjs";
+import { decode, fitFloor, floorAt, held } from "../src/analytics/speed.mjs";
 
 // Fails if the fit tracks the mean or median of the upward-only noise instead of the floor.
 test("fitFloor recovers a known floor under upward-only noise", () => {
@@ -12,7 +12,7 @@ test("fitFloor recovers a known floor under upward-only noise", () => {
     const ctx = rnd() * 250_000;
     // A third of calls sit near the floor; the rest add a long TTFT variance (queueing, stalls).
     const variance = rnd() < 0.3 ? rnd() * 0.08 : -Math.log(rnd());
-    return { uncached: ctx * 0.1, cached: ctx * 0.9, ttft: Math.exp(a + b * ctx + variance) };
+    return { input: ctx * 0.1, cacheRead: ctx * 0.9, cacheWrite: null, ttft: Math.exp(a + b * ctx + variance) };
   });
   const fit = fitFloor(rows);
   for (const ctx of [20_000, 120_000, 230_000]) {

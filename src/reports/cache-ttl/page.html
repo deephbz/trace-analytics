@@ -1,0 +1,522 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Prompt-cache TTL backtest</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg:#fafaf9; --fg:#1c1917; --mute:#78716c; --line:#e7e5e4; --card:#fff; --good:#15803d; --bad:#b91c1c;
+    --r-anthropic:#d97706; --r-magpie:#7c3aed; --r-openai-codex:#0284c7; --r-openai:#0891b2; --r-other:#78716c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0c0a09; --fg:#f5f5f4; --mute:#a8a29e; --line:#292524; --card:#1c1917; --good:#4ade80; --bad:#f87171;
+      --r-anthropic:#fbbf24; --r-magpie:#a78bfa; --r-openai-codex:#38bdf8; --r-openai:#22d3ee; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 ui-sans-serif,system-ui,-apple-system,sans-serif; background:var(--bg); color:var(--fg); }
+  main { max-width:1180px; margin:0 auto; padding:0 24px 40px; }
+  .top { position:sticky; top:0; z-index:5; background:var(--bg); border-bottom:1px solid var(--line); padding:12px 0; margin-bottom:16px;
+    display:flex; flex-wrap:wrap; gap:8px 16px; align-items:baseline; }
+  h1 { font-size:18px; margin:0; } h2 { font-size:15px; margin:0 0 2px; }
+  .sub { color:var(--mute); font-size:12.5px; margin:0 0 10px; }
+  .notes { color:var(--mute); font-size:12px; margin:8px 0 0; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(520px,1fr)); gap:16px; margin-top:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; overflow-x:auto; }
+  .cards { display:flex; gap:12px; flex-wrap:wrap; }
+  .verdict { min-width:260px; flex-basis:0; }
+  .verdict .big { font-size:20px; font-weight:600; margin:4px 0 2px; }
+  .chip { display:inline-block; font-size:11px; padding:1px 7px; border:1px solid var(--line); border-radius:999px; color:var(--mute); margin-left:6px; }
+  .act { font-size:12.5px; margin-top:8px; } .act code { font-size:12px; }
+  .routes button { font:inherit; font-size:13px; padding:3px 10px; border:1px solid var(--line); border-radius:999px; background:transparent; color:inherit; cursor:pointer; }
+  .routes button[aria-pressed="true"] { border-color:var(--fg); font-weight:600; }
+  .routes .sw { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; }
+  table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; font-size:13px; }
+  th, td { padding:5px 8px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; } th { color:var(--mute); font-weight:500; }
+  input { font:inherit; width:74px; padding:2px 4px; border:1px solid var(--line); border-radius:4px; background:transparent; color:inherit; text-align:right; }
+  .good { color:var(--good); } .bad { color:var(--bad); } .mute { color:var(--mute); }
+  svg { display:block; } svg text { fill:var(--fg); font-size:11px; } svg .m { fill:var(--mute); } svg .axis { stroke:var(--line); }
+  svg .lbl { font-size:10.5px; fill:var(--mute); }
+  details { margin-top:16px; } summary { cursor:pointer; color:var(--mute); padding:4px 0; }
+  #err { color:var(--bad); white-space:pre-wrap; }
+  main[data-hl] [data-band] { transition:opacity .1s; }
+  code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+</style>
+<style id="hlcss"></style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <pattern id="est" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+    <line x1="0" y1="0" x2="0" y2="6" style="stroke:var(--card);stroke-width:2.2;opacity:.75" /></pattern>
+</defs></svg>
+<main>
+  <div class="top">
+    <h1>Prompt-cache TTL backtest</h1>
+    <span class="sub" id="meta" style="margin:0"></span>
+    <span class="routes" id="routes" style="margin-left:auto"></span>
+  </div>
+  <div id="err"></div>
+
+  <section class="card">
+    <h2 id="verdict-title">Which TTL would have cost least, per route</h2>
+    <p class="sub">One card per inference route. A dot is the route's cost under one policy over this window; the axis does not start at $0. Hatched = cache writes estimated (the route logs none).</p>
+    <div class="cards" id="verdict"></div>
+    <p class="notes" id="calib"></p>
+  </section>
+
+  <section class="card" style="margin-top:16px">
+    <h2>A TTL is a ruler laid against each idle gap</h2>
+    <p class="sub">Turns of one conversation on one model. Each turn can reuse the prompt of the turn before it. If the gap is within the TTL, that prefix is a cache read; otherwise the turn rewrites it.</p>
+    <div id="ruler"></div>
+  </section>
+
+  <div class="grid">
+    <section class="card"><h2 id="gaps-title"></h2><p class="sub" id="gaps-sub"></p><div id="gaps"></div><p class="notes" id="gaps-notes"></p></section>
+    <section class="card"><h2 id="be-title"></h2><p class="sub" id="be-sub"></p><div id="be"></div><p class="notes" id="be-notes"></p></section>
+    <section class="card"><h2 id="ledger-title"></h2><p class="sub" id="ledger-sub"></p><div id="ledger"></div><p class="notes" id="ledger-notes"></p></section>
+    <section class="card"><h2 id="tl-title"></h2><p class="sub" id="tl-sub"></p><div id="tl"></div><p class="notes" id="tl-notes"></p></section>
+  </div>
+
+  <section class="card" style="margin-top:16px">
+    <h2 id="cov-title"></h2>
+    <p class="sub">Width = share. Top bar: all logged tokens. Bottom bar: actual cost at API prices (in scope only). Hatched = cache writes estimated.</p>
+    <div id="cov"></div>
+    <p class="notes" id="cov-notes"></p>
+  </section>
+
+  <details><summary>Policies (what-if)</summary><div class="card">
+    <p class="sub">Hard-coded from provider docs (<code>src/analytics/cache-ttl/policies.mjs</code>). Write is a multiplier of the input price. Edit a cell to try a hypothetical policy; the page recomputes.</p>
+    <div id="pol"></div></div></details>
+  <details><summary>Models and API prices ($/M tokens)</summary><div class="card">
+    <p class="sub" id="pricesub"></p><div id="models"></div></div></details>
+  <details><summary>Assumptions</summary><div class="card"><ul class="sub">
+    <li>Scope: Anthropic and OpenAI model families, whatever route served them, at public API prices. Other models are excluded.</li>
+    <li>A turn reuses the prompt of its lineage predecessor: the nearest earlier assistant request on its parentId path, on the same model, with no compaction between.</li>
+    <li>Observed cache reads decide the outcome where they cover the prefix, or where the gap was within the TTL the turn actually ran under. Only misses that expiry explains are replayed.</li>
+    <li>Routes that log no cache writes (openai-codex, magpie) have their uncached input priced as writes at the route's actual policy. These writes are estimated.</li>
+    <li>Every turn refreshes its entry. Cross-session shared prefixes, minimum cacheable length, and retention beyond the nominal TTL are not modeled; the last one biases against long TTLs.</li>
+    <li>Scenarios are compared with each other. Replay and actual cost differ by the cache reads that happened after the nominal TTL.</li>
+  </ul></div></details>
+</main>
+
+<script type="module">
+window.addEventListener("error", (e) => { document.getElementById("err").textContent = `Page error: ${e.message}`; });
+import { prepare, requestCosts, actualRepriced, coverage, ttlCostModel, COL } from "/sim.mjs";
+import { familyOf, ROUTE_CONTROL } from "/policies.mjs";
+
+const D = await (await fetch("/data.json")).json();
+const prep = prepare(D.rows, D.models);
+const prices = D.prices.map((p) => (p ? { ...p } : null));
+const policies = JSON.parse(JSON.stringify(D.policies));
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const usd = (n) => (Math.abs(n) >= 1000 ? `$${(n / 1000).toFixed(2)}k` : Math.abs(n) >= 100 ? `$${n.toFixed(0)}` : `$${n.toFixed(2)}`);
+const tok = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(2)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(0)}k` : `${Math.round(n)}`);
+const pct = (x) => `${(x * 100).toFixed(x < 0.1 && x > 0 ? 1 : 0)}%`;
+const fmtT = (s) => (s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${+(s / 60).toFixed(s < 600 ? 1 : 0)}m` : s < 86400 ? `${+(s / 3600).toFixed(1)}h` : `${+(s / 86400).toFixed(1)}d`);
+const day = (t) => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+const hhmm = (t) => new Date(t).toTimeString().slice(0, 5);
+const LABEL = { anthropic: "Direct Anthropic", magpie: "Magpie Claude", "openai-codex": "Codex (ChatGPT)", openai: "OpenAI" };
+const color = (r) => (["anthropic", "magpie", "openai-codex", "openai"].includes(r) ? `var(--r-${r})` : "var(--r-other)");
+const BAND_TEXT = { short: "within the short TTL", mid: "between the TTLs", long: "beyond the long TTL", cold: "first in lineage" };
+
+// Routes: in-scope rows grouped by the provider that served them.
+const routes = [];
+{
+  const byKey = new Map();
+  D.rows.forEach((r, i) => {
+    const m = r[COL.model], g = prep.group[m];
+    if (!g) return;
+    const key = prep.route[m];
+    if (!byKey.has(key)) byKey.set(key, { key, label: LABEL[key] ?? key, idx: [], groupCount: {}, models: new Set() });
+    const R = byKey.get(key);
+    R.idx.push(i); R.models.add(m); R.groupCount[g] = (R.groupCount[g] ?? 0) + 1;
+  });
+  for (const R of byKey.values()) {
+    R.group = Object.entries(R.groupCount).sort((a, b) => b[1] - a[1])[0][0];
+    R.idx = R.idx.filter((i) => prep.group[D.rows[i][COL.model]] === R.group);
+    R.estimated = [...R.models].some((m) => !prep.reported[m]);
+    R.actualName = prep.actual[[...R.models].find((m) => prep.group[m] === R.group)];
+    routes.push(R);
+  }
+}
+const state = { route: null, cursor: null };
+
+function policyList(g) {
+  return Object.entries(policies[g]).map(([name, p]) => ({ name, ...p })).sort((a, b) => a.ttlSec - b.ttlSec);
+}
+function bandOf(gap, ps) {
+  if (!Number.isFinite(gap)) return "cold";
+  if (gap <= ps[0].ttlSec) return "short";
+  return ps.length > 1 && gap <= ps[ps.length - 1].ttlSec ? "mid" : "long";
+}
+
+function compute() {
+  const inRoute = new Uint8Array(D.rows.length);
+  for (const R of routes) {
+    R.ps = policyList(R.group);
+    R.choice = R.ps.length > 1;
+    R.short = R.ps[0]; R.long = R.ps[R.ps.length - 1];
+    const fam = familyOf(R.group);
+    R.cost = {}; R.per = {};
+    for (const p of R.ps) {
+      const rc = requestCosts(prep, prices, { id: p.name, anthropic: "default", openai: "default", [fam]: p.name }, policies);
+      let s = 0;
+      for (const i of R.idx) if (!Number.isNaN(rc.cost[i])) s += rc.cost[i];
+      R.cost[p.name] = s; R.per[p.name] = rc.cost;
+    }
+    R.best = R.ps.reduce((a, b) => (R.cost[b.name] < R.cost[a.name] ? b : a));
+    R.delta = R.cost[R.long.name] - R.cost[R.short.name];
+    R.band = new Map();
+    R.decisive = []; R.beyond = 0;
+    const actualTtl = policies[R.group][R.actualName]?.ttlSec ?? R.short.ttlSec;
+    for (const i of R.idx) {
+      inRoute[i] = 1;
+      const g = prep.gap[i], b = bandOf(g, R.ps);
+      R.band.set(i, b);
+      if (b === "mid" || b === "long") R.decisive.push(i);
+      if (Number.isFinite(g) && g > actualTtl && D.rows[i][COL.cr] > 0) R.beyond++;
+    }
+    R.days = new Set(R.idx.map((i) => day(D.rows[i][COL.t])));
+    R.decDays = new Set(R.decisive.map((i) => day(D.rows[i][COL.t])));
+    R.decSessions = new Set(R.decisive.map((i) => D.rows[i][COL.chain]));
+    R.model = ttlCostModel(prep, prices, (i) => R.band.has(i));
+  }
+  const none = requestCosts(prep, prices, { id: "none", anthropic: "none", openai: "none" }, policies);
+  let noCache = 0;
+  for (let i = 0; i < D.rows.length; i++) if (inRoute[i] && !Number.isNaN(none.cost[i])) noCache += none.cost[i];
+  const repriced = actualRepriced(prep, prices, D.warm, policies);
+  for (const R of routes) R.actualCost = [...R.models].reduce((s, m) => s + (repriced.byModel[m] ?? 0), 0);
+  return { noCache, repriced, cov: coverage(prep, prices) };
+}
+
+// ---------- 1. Verdict cards ----------
+function renderVerdict(C) {
+  const order = [...routes].sort((a, b) => (b.choice - a.choice) || (b.actualCost - a.actualCost));
+  $("verdict").innerHTML = order.map((R) => {
+    const grow = Math.max(1, Math.sqrt(R.actualCost));
+    if (!R.choice) {
+      const p = R.short;
+      return `<div class="card verdict" style="flex-grow:${grow * 0.5};border-top:3px solid ${color(R.key)}">
+        <b>${esc(R.label)}</b> <span class="mute">${usd(R.cost[p.name])}</span>
+        <div class="big mute">No choice</div>
+        <div class="sub" style="margin:0">One policy exists: ${esc(p.name)} (write ${p.write}×). Only turning caching off would change this cost.</div>
+        ${R.beyond ? `<div class="notes">${R.beyond} turns read cache after ${fmtT(p.ttlSec)}; the replay counts them as misses.</div>` : ""}</div>`;
+    }
+    const d = R.delta, better = d < 0 ? R.long : R.short, worse = d < 0 ? R.short : R.long;
+    const weak = R.decDays.size < 3 || Math.abs(d) < 0.05 * R.cost[R.actualName];
+    const ctl = ROUTE_CONTROL[R.key]?.[better.name];
+    const action = better.name === R.actualName ? `Keep ${esc(better.name)}${ctl && ctl !== "default" ? ` (<code>${esc(ctl)}</code>)` : ""}.`
+      : ctl === "default" ? `Remove the setting that selects ${esc(R.actualName)}; ${esc(better.name)} is the default.`
+      : ctl ? `Set <code>${esc(ctl)}</code>.` : `No known setting selects ${esc(better.name)} on this route.`;
+    return `<div class="card verdict" style="flex-grow:${grow};border-top:3px solid ${color(R.key)}">
+      <b>${esc(R.label)}</b> <span class="mute">${usd(R.cost[R.actualName])} as run</span>
+      <div class="big"><span class="good">▼</span> ${esc(better.name)} saves ${usd(Math.abs(d))} <span class="mute" style="font-size:13px;font-weight:400">${pct(Math.abs(d) / R.cost[worse.name])} of this route</span></div>
+      ${dumbbell(R)}
+      <div class="sub" style="margin:6px 0 0">Evidence: ${R.decisive.length} turns after gaps over ${fmtT(R.short.ttlSec)} · ${R.decDays.size} day${R.decDays.size === 1 ? "" : "s"} · ${R.decSessions.size} session${R.decSessions.size === 1 ? "" : "s"}${weak ? `<span class="chip">weak evidence</span>` : ""}</div>
+      <div class="act">→ ${action}</div></div>`;
+  }).join("");
+  const choice = routes.filter((R) => R.choice);
+  const asRun = routes.reduce((s, R) => s + R.cost[R.actualName ?? R.short.name], 0);
+  $("calib").innerHTML = `For scale: caching itself saves ${usd(C.noCache - asRun)} over this window (no cache would cost ${usd(C.noCache)}). The TTL choice moves ${choice.map((R) => `${esc(R.label)} ${d$(R.delta)}`).join(" · ")} (1h − 5m). These are not added together: each route is a separate decision.`;
+}
+const d$ = (d) => `${d < 0 ? "−" : "+"}${usd(Math.abs(d))}`;
+
+function dumbbell(R) {
+  const W = 380, H = 24 * R.ps.length + 32, L = 36, Rm = 60;
+  const vals = R.ps.map((p) => R.cost[p.name]);
+  const lo = Math.min(...vals) * 0.8, hi = Math.max(...vals) * 1.03 || 1;
+  const x = (v) => L + ((v - lo) / (hi - lo || 1)) * (W - L - Rm);
+  const ticks = [lo, (lo + hi) / 2, hi];
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px">
+    ${ticks.map((t) => `<line class="axis" x1="${x(t)}" x2="${x(t)}" y1="4" y2="${H - 16}"/><text class="lbl" x="${x(t)}" y="${H - 4}" text-anchor="middle">${usd(t)}</text>`).join("")}
+    ${R.ps.map((p, k) => {
+      const y = 24 + k * 24, v = R.cost[p.name], ran = p.name === R.actualName;
+      return `<text x="${L - 6}" y="${y + 4}" text-anchor="end">${esc(p.name)}</text>
+        <line x1="${x(lo)}" x2="${x(v)}" y1="${y}" y2="${y}" style="stroke:${color(R.key)};stroke-width:2;opacity:.35"/>
+        <circle cx="${x(v)}" cy="${y}" r="6" style="fill:${color(R.key)}"/>${R.estimated ? `<circle cx="${x(v)}" cy="${y}" r="6" fill="url(#est)"/>` : ""}
+        ${(() => { const t = `${usd(v)}${ran ? " · as run" : ""}`, right = x(v) + 10 + t.length * 6.2 > W;
+          return `<text x="${right ? x(v) - 10 : x(v) + 10}" y="${y + (right ? -8 : 4)}" text-anchor="${right ? "end" : "start"}">${usd(v)}${ran ? ` <tspan class="m">· as run</tspan>` : ""}</text>`; })()}`;
+    }).join("")}</svg>`;
+}
+
+// ---------- 2. Gap ruler (static) ----------
+function renderRuler() {
+  const W = 1100, H = 150, xs = [60, 200, 340, 620, 1000];
+  const gaps = ["3 s", "12 s", "8 min", "3 h"];
+  const out5 = ["read", "read", "rewrite ×1.25", "rewrite ×1.25"];
+  const out1 = ["read", "read", "read", "rewrite ×2"];
+  const row = (y, name, outs, extra) => `<text x="0" y="${y + 4}" class="m">${name}</text>` + outs.map((o, k) => {
+    const mid = (xs[k] + xs[k + 1]) / 2, hit = o === "read";
+    return `<rect x="${xs[k] + 8}" y="${y - 9}" width="${xs[k + 1] - xs[k] - 16}" height="18" rx="4" style="fill:${hit ? "var(--good)" : "var(--bad)"};opacity:.14"/>
+      <text x="${mid}" y="${y + 4}" text-anchor="middle" class="${hit ? "good" : "bad"}" style="fill:currentColor">${o}</text>`;
+  }).join("") + `<text x="${W}" y="${y + 4}" text-anchor="end" class="m">${extra}</text>`;
+  $("ruler").innerHTML = `<svg viewBox="-10 0 ${W + 20} ${H}" width="100%">
+    <line class="axis" x1="${xs[0]}" x2="${xs[4]}" y1="30" y2="30" style="stroke-width:2"/>
+    ${xs.map((x, k) => `<circle cx="${x}" cy="30" r="6" style="fill:var(--fg)"/><text x="${x}" y="16" text-anchor="middle" class="m">turn ${k + 1}</text>`).join("")}
+    ${gaps.map((g, k) => `<text x="${(xs[k] + xs[k + 1]) / 2}" y="46" text-anchor="middle">gap ${g}</text>`).join("")}
+    ${row(78, "5 min TTL", out5, "")}
+    ${row(110, "1 h TTL", out1, "")}
+    <text x="${(xs[2] + xs[3]) / 2}" y="138" text-anchor="middle" class="m">↑ 1 h rescues this gap</text>
+    <text x="${(xs[3] + xs[4]) / 2}" y="138" text-anchor="middle" class="m">↑ both miss; 1 h pays more</text>
+  </svg><p class="notes">A read costs about 0.05–0.1× input. Every turn also writes its new tail (tool results, the last reply), and each rewrite writes the whole prompt: 1.25× input under 5 min, 2× under 1 h. So 1 h pays a premium on every turn and earns it back only on gaps between 5 min and 1 h.</p>`;
+}
+
+// ---------- shared log-time axis ----------
+const TMIN = 30, TMAX = 172800;
+const lx = (t, L, W) => L + (Math.log(Math.max(TMIN, t) / TMIN) / Math.log(TMAX / TMIN)) * W;
+const TTICKS = [[60, "1m"], [300, "5m"], [900, "15m"], [1800, "30m"], [3600, "1h"], [14400, "4h"], [86400, "24h"]];
+
+// ---------- 3. Where the gaps are ----------
+const EDGES = [60, 90, 120, 180, 300, 420, 600, 900, 1200, 1800, 2700, 3600, 5400, 7200, 14400, 21600, 43200, 86400, TMAX];
+function renderGaps(R) {
+  let early = 0, total = 0;
+  const bins = EDGES.slice(0, -1).map((lo, k) => ({ lo, hi: EDGES[k + 1], tokens: 0, n: 0 }));
+  for (const i of R.idx) {
+    const g = prep.gap[i], u = prep.reuse[i];
+    if (!(u > 0) || !Number.isFinite(g)) continue;
+    total += u;
+    if (g <= 60) { early += u; continue; }
+    const b = bins.find((x) => g <= x.hi) ?? bins[bins.length - 1];
+    b.tokens += u; b.n++;
+  }
+  const upto = (T) => { let s = early; for (const b of bins) if (b.hi <= T) s += b.tokens; return total ? s / total : 0; };
+  const W = 540, L = 44, Rm = 12, PW = W - L - Rm, H = 250, T = 70, B = 30;
+  const max = Math.max(...bins.map((b) => b.tokens)) || 1;
+  const y = (v) => H - B - (v / max) * (H - B - T);
+  const sx = lx(R.short.ttlSec, L, PW), lxx = lx(R.long.ttlSec, L, PW);
+  const col = color(R.key);
+  $("gaps-title").textContent = `${pct(upto(R.short.ttlSec))} of reusable tokens come back within ${fmtT(R.short.ttlSec)}` + (R.choice ? `; ${pct(upto(R.long.ttlSec) - upto(R.short.ttlSec))} come back between ${fmtT(R.short.ttlSec)} and ${fmtT(R.long.ttlSec)}` : "");
+  $("gaps-sub").textContent = `${R.label}. Height = reusable prompt tokens per idle gap; x is log time. The top strip holds gaps under 1 min.`;
+  const bandRect = R.choice ? `<rect x="${sx}" y="${T - 4}" width="${lxx - sx}" height="${H - B - T + 4}" style="fill:${col};opacity:.1" data-band="mid"/>
+    <text x="${(sx + lxx) / 2}" y="${T + 8}" text-anchor="middle" class="lbl">${fmtT(R.long.ttlSec)} rescues these</text>` : "";
+  $("gaps").innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%">
+    <rect x="${L}" y="8" width="${PW}" height="22" rx="3" style="fill:${col};opacity:.85" data-band="short"/>
+    ${R.estimated ? `<rect x="${L}" y="8" width="${PW}" height="22" rx="3" fill="url(#est)"/>` : ""}
+    <text x="${L + 8}" y="23" style="fill:var(--card);font-weight:600">gaps under 1 min · ${tok(early)} tokens · ${pct(total ? early / total : 0)}</text>
+    <text x="${L}" y="50" class="lbl">gaps of 1 min and longer (y rescaled):</text>
+    ${bandRect}
+    <text x="${(L + sx) / 2 + 10}" y="${T + 8}" text-anchor="middle" class="lbl">${R.choice ? "both hit" : "hit"}</text>
+    <text x="${(lxx + W - Rm) / 2}" y="${T + 8}" text-anchor="middle" class="lbl">${R.choice ? "both miss" : "miss"}</text>
+    <line class="axis" x1="${L}" x2="${W - Rm}" y1="${H - B}" y2="${H - B}"/>
+    <text class="m" x="${L - 6}" y="${T + 4}" text-anchor="end">${tok(max)}</text>
+    ${bins.map((b) => {
+      const x0 = lx(b.lo, L, PW), x1 = lx(b.hi, L, PW), band = bandOf(b.hi, R.ps) === "short" ? "short" : b.lo >= R.long.ttlSec ? "long" : "mid";
+      return b.tokens ? `<rect x="${x0 + 1}" y="${y(b.tokens)}" width="${Math.max(1, x1 - x0 - 2)}" height="${H - B - y(b.tokens)}" style="fill:${col}" data-band="${band}"><title>${fmtT(b.lo)}–${fmtT(b.hi)}: ${tok(b.tokens)} tokens, ${b.n} turns</title></rect>${R.estimated ? `<rect x="${x0 + 1}" y="${y(b.tokens)}" width="${Math.max(1, x1 - x0 - 2)}" height="${H - B - y(b.tokens)}" fill="url(#est)" pointer-events="none"/>` : ""}` : "";
+    }).join("")}
+    ${TTICKS.map(([t, l]) => `<text class="m" x="${lx(t, L, PW)}" y="${H - 12}" text-anchor="middle">${l}</text>`).join("")}
+    ${R.ps.map((p) => `<line x1="${lx(p.ttlSec, L, PW)}" x2="${lx(p.ttlSec, L, PW)}" y1="${T - 4}" y2="${H - B}" style="stroke:var(--fg);stroke-width:1.5;stroke-dasharray:${p === R.short && R.choice ? "4 3" : "none"}"/><text x="${lx(p.ttlSec, L, PW) + 3}" y="${H - B - 4}" class="lbl">${esc(p.name)}</text>`).join("")}
+  </svg>`;
+  $("gaps-notes").textContent = `Cumulative: ${pct(upto(60))} by 1m · ${pct(upto(R.short.ttlSec))} by ${fmtT(R.short.ttlSec)}${R.choice ? ` · ${pct(upto(R.long.ttlSec))} by ${fmtT(R.long.ttlSec)}` : ""}.` + (R.beyond ? ` ${R.beyond} turn${R.beyond === 1 ? "" : "s"} read cache after the TTL they ran under; the replay counts them as misses, which biases against long TTLs.` : "");
+}
+
+// ---------- 4. Break-even ----------
+function renderBreakEven(R) {
+  const W = 540, H = 260, L = 52, Rm = 14, PW = W - L - Rm, T = 14, B = 30;
+  const col = color(R.key);
+  const mults = [...new Set(R.ps.map((p) => p.write))].sort((a, b) => a - b);
+  const grid = Array.from({ length: 120 }, (_, k) => TMIN * Math.pow(86400 / TMIN, k / 119));
+  const curves = mults.map((w) => grid.map((t) => R.model.at(t, w)));
+  const ref = R.model.at(R.short.ttlSec, R.short.write);
+  const all = curves.flat().concat([ref]);
+  const lo = Math.min(...all), hi = Math.max(...all), pad = (hi - lo) * 0.08 || 1;
+  const y = (v) => T + (1 - (v - (lo - pad)) / (hi - lo + 2 * pad)) * (H - B - T);
+  const X = (t) => lx(t, L, PW);
+  const path = (c) => c.map((v, k) => `${k ? "L" : "M"}${X(grid[k]).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  let crossing = null, title, notes;
+  if (R.choice) {
+    const wl = R.long.write;
+    for (let k = 0; k < 400; k++) { const t = R.short.ttlSec * Math.pow(86400 / R.short.ttlSec, k / 399); if (R.model.at(t, wl) < ref) { crossing = t; break; } }
+    title = crossing ? `${R.long.write}× writes pay back once the TTL passes ≈ ${fmtT(crossing)}` : `${R.long.write}× writes never pay back below 24h on this route`;
+    notes = `Only ${R.ps.map((p) => p.name).join(" and ")} exist. The curves assume the same write multiplier at every TTL, to show where the trade-off turns.`;
+  } else {
+    title = `One policy: ${R.short.name} at ${R.short.write}× writes`;
+    notes = "The curve shows what other TTLs would cost at the same write price; the provider does not offer them.";
+  }
+  const longIdx = mults.indexOf(R.long.write);
+  const fillPoly = `M${X(grid[0])},${y(ref)} ` + curves[longIdx].map((v, k) => `L${X(grid[k]).toFixed(1)},${y(v).toFixed(1)}`).join("") + ` L${X(grid[grid.length - 1])},${y(ref)}Z`;
+  $("be-title").textContent = title;
+  $("be-sub").textContent = `${R.label}. Prompt-side cost (reads + writes) over the window vs TTL, log x. Solid = ${R.long.write}× writes${mults.length > 1 ? `, dashed = ${R.short.write}×` : ""}. Horizontal line = ${R.short.name} at ${R.short.write}×. Move the pointer to read values.`;
+  $("be").innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" id="be-svg" style="touch-action:none">
+    <defs><clipPath id="cl-good"><rect x="0" y="${y(ref)}" width="${W}" height="${H}"/></clipPath><clipPath id="cl-bad"><rect x="0" y="0" width="${W}" height="${y(ref)}"/></clipPath></defs>
+    ${R.choice ? `<path d="${fillPoly}" clip-path="url(#cl-good)" style="fill:var(--good);opacity:.15"/><path d="${fillPoly}" clip-path="url(#cl-bad)" style="fill:var(--bad);opacity:.12"/>` : ""}
+    <line class="axis" x1="${L}" x2="${W - Rm}" y1="${H - B}" y2="${H - B}"/>
+    ${[lo, (lo + hi) / 2, hi].map((v) => `<text class="m" x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${usd(v)}</text>`).join("")}
+    ${TTICKS.filter(([t]) => t <= 86400).map(([t, l]) => `<text class="m" x="${X(t)}" y="${H - 12}" text-anchor="middle">${l}</text>`).join("")}
+    <line x1="${L}" x2="${W - Rm}" y1="${y(ref)}" y2="${y(ref)}" style="stroke:var(--mute);stroke-dasharray:2 3"/>
+    ${curves.map((c, k) => `<path d="${path(c)}" fill="none" style="stroke:${col};stroke-width:2${mults[k] !== R.long.write ? ";stroke-dasharray:5 4" : ""}"/>`).join("")}
+    ${crossing ? `<line x1="${X(crossing)}" x2="${X(crossing)}" y1="${y(ref) - 22}" y2="${y(ref) + 4}" style="stroke:var(--fg)"/><text x="${X(crossing) + 4}" y="${y(ref) - 12}">break-even ≈ ${fmtT(crossing)}</text>` : ""}
+    ${R.ps.map((p) => { const v = R.model.at(p.ttlSec, p.write); return `<circle cx="${X(p.ttlSec)}" cy="${y(v)}" r="5.5" style="fill:${p.name === R.actualName ? col : "var(--card)"};stroke:${col};stroke-width:2"/><text x="${X(p.ttlSec) + 8}" y="${y(v) + 14}">${esc(p.name)} ${usd(v)}${p.name === R.actualName ? " · as run" : ""}</text>`; }).join("")}
+    <g id="be-cur"></g>
+    <rect x="${L}" y="${T}" width="${PW}" height="${H - B - T}" fill="transparent" id="be-hit"/>
+  </svg>`;
+  $("be-notes").textContent = notes;
+  const svg = $("be-svg"), cur = $("be-cur");
+  svg.addEventListener("pointermove", (e) => {
+    const pt = svg.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY;
+    const p = pt.matrixTransform(svg.getScreenCTM().inverse());
+    if (p.x < L || p.x > L + PW) return (cur.innerHTML = "");
+    const t = TMIN * Math.pow(TMAX / TMIN, (p.x - L) / PW);
+    if (t > 86400) return (cur.innerHTML = "");
+    const vals = mults.map((w) => `${w}×: ${usd(R.model.at(t, w))}`).join(" · ");
+    const tx = p.x > W / 2 ? p.x - 6 : p.x + 6, anchor = p.x > W / 2 ? "end" : "start";
+    cur.innerHTML = `<line x1="${p.x}" x2="${p.x}" y1="${T}" y2="${H - B}" style="stroke:var(--fg);opacity:.4"/>
+      <text x="${tx}" y="${T + 10}" text-anchor="${anchor}" style="font-weight:600">TTL ${fmtT(t)} · ${vals}</text>`;
+  });
+  svg.addEventListener("pointerleave", () => (cur.innerHTML = ""));
+}
+
+// ---------- 5. Ledger ----------
+function renderLedger(R) {
+  if (!R.choice) {
+    $("ledger-title").textContent = "No second policy to compare";
+    $("ledger-sub").textContent = `${R.label} has one policy, so there is no difference to break down.`;
+    $("ledger").innerHTML = ""; $("ledger-notes").textContent = "";
+    return;
+  }
+  const a = R.per[R.short.name], b = R.per[R.long.name];
+  const rows = ["short", "mid", "long", "cold"].map((k) => ({ k, d: 0, n: 0, tok: 0, lowRead: 0 }));
+  let rescued = 0, premium = 0;
+  const by = Object.fromEntries(rows.map((r) => [r.k, r]));
+  for (const i of R.idx) {
+    if (Number.isNaN(a[i])) continue;
+    const r = by[R.band.get(i)];
+    const x = b[i] - a[i];
+    r.d += x; r.n++; r.tok += prep.prompt[i];
+    if (x < 0) rescued -= x; else premium += x;
+    if (r.k === "mid" && prep.reuse[i] < 0.1 * prep.prompt[i]) r.lowRead++;
+  }
+  const label = { short: `gap ≤ ${fmtT(R.short.ttlSec)}: premium on the new tail`, mid: `${fmtT(R.short.ttlSec)}–${fmtT(R.long.ttlSec)}: reads rescued − premium`, long: `gap > ${fmtT(R.long.ttlSec)}: premium on the whole rewrite`, cold: "first turn: premium on the whole write" };
+  const net = R.delta;
+  $("ledger-title").textContent = `${net < 0 ? `${R.long.name} saves` : `${R.long.name} costs`} ${usd(Math.abs(net))}: ${usd(rescued)} of rescued reads against ${usd(premium)} of extra write premium`;
+  $("ledger-sub").textContent = `${R.label}. Cost under ${R.long.name} minus cost under ${R.short.name}, by idle-gap band. Left = ${R.long.name} cheaper.`;
+  const W = 540, L = 250, Rm = 60, rowH = 30, H = rowH * 5 + 16;
+  const vals = rows.map((r) => r.d).concat([net, 0]);
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const x = (v) => L + ((v - lo) / (hi - lo || 1)) * (W - L - Rm);
+  const bar = (yy, v, k, fill, text, sub) => `<g data-band="${k}"><text x="${L - 10}" y="${yy + 8}" text-anchor="end">${text}</text><text x="${L - 10}" y="${yy + 21}" text-anchor="end" class="lbl">${sub}</text>
+    <rect x="${Math.min(x(0), x(v))}" y="${yy}" width="${Math.max(1, Math.abs(x(v) - x(0)))}" height="${rowH - 10}" rx="2" style="fill:${fill}"/>
+    <text x="${v < 0 ? x(0) + 4 : x(v) + 4}" y="${yy + 14}">${d$(v)}</text></g>`;
+  $("ledger").innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%">
+    <line x1="${x(0)}" x2="${x(0)}" y1="0" y2="${H}" style="stroke:var(--mute)"/>
+    ${rows.map((r, k) => bar(4 + k * rowH, r.d, r.k, r.d < 0 ? "var(--good)" : "var(--bad)", label[r.k], `${r.n} turns · ${tok(r.tok)} prompt tokens`)).join("")}
+    <line class="axis" x1="${L - 200}" x2="${W}" y1="${4 + 4 * rowH - 4}" y2="${4 + 4 * rowH - 4}"/>
+    ${bar(4 + 4 * rowH + 2, net, "net", color(R.key), `<tspan style="font-weight:600">net</tspan>`, "")}
+  </svg>`;
+  $("ledger-notes").textContent = by.mid.lowRead && by.mid.d > 0 ? `${by.mid.lowRead} of ${by.mid.n} turns between the TTLs read under 10% of their prompt, though their gap was within the TTL they ran under. The replay keeps these observed misses (prefix change or eviction), which biases against ${R.long.name} here.` : "Hover a band to highlight it in the other charts.";
+}
+
+// ---------- 6. Evidence timeline ----------
+function renderTimeline(R) {
+  const t0 = D.sinceMs, t1 = D.untilMs, W = 540, L = 96, Rm = 10, PW = W - L - Rm;
+  const x = (t) => L + ((t - t0) / (t1 - t0)) * PW;
+  const count = new Map();
+  for (const i of R.decisive) { const s = D.rows[i][COL.chain]; count.set(s, (count.get(s) ?? 0) + 1); }
+  const top = [...count.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([s]) => s);
+  const rowOf = (s) => { const k = top.indexOf(s); return k >= 0 ? k : top.length; };
+  const nRows = top.length + (count.size > top.length ? 1 : 0) || 1;
+  const rowH = 20, T = 8, H = T + nRows * rowH + 30;
+  const ticks = new Set();
+  for (const i of R.idx) { const s = D.rows[i][COL.chain]; if (!count.has(s)) continue; ticks.add(`${rowOf(s)}|${Math.floor(D.rows[i][COL.t] / 3.6e6)}`); }
+  const byDay = new Map();
+  for (const i of R.decisive) { const d = day(D.rows[i][COL.t]); (byDay.get(d) ?? byDay.set(d, []).get(d)).push(i); }
+  const busiest = [...byDay.entries()].sort((a, b) => b[1].length - a[1].length)[0];
+  const days = Math.round((t1 - t0) / 864e5);
+  const col = color(R.key);
+  $("tl-title").textContent = R.decisive.length ? `The deciding turns came on ${R.decDays.size} of ${days} days` : "No turn waited longer than the short TTL";
+  $("tl-sub").textContent = `${R.label}. One row per session. Dots = turns after a gap over ${fmtT(R.short.ttlSec)} (${R.choice ? `filled ≤ ${fmtT(R.long.ttlSec)}, hollow beyond` : "beyond the TTL"}); size = prompt. Ticks = other turns, per hour.`;
+  $("tl").innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%">
+    ${Array.from({ length: nRows }, (_, k) => `<text x="${L - 8}" y="${T + k * rowH + 14}" text-anchor="end" class="m">${k < top.length ? `session ${k + 1}` : "other sessions"}</text><line class="axis" x1="${L}" x2="${W - Rm}" y1="${T + k * rowH + 10}" y2="${T + k * rowH + 10}"/>`).join("")}
+    ${[...ticks].map((k) => { const [r, h] = k.split("|").map(Number); return `<rect x="${x(h * 3.6e6)}" y="${T + r * rowH + 5}" width="1.5" height="10" style="fill:var(--mute);opacity:.5"/>`; }).join("")}
+    ${R.decisive.map((i) => {
+      const r = D.rows[i], b = R.band.get(i), rad = Math.max(2.5, Math.min(9, Math.sqrt(prep.prompt[i] / 4000)));
+      return `<circle data-band="${b}" cx="${x(r[COL.t])}" cy="${T + rowOf(r[COL.chain]) * rowH + 10}" r="${rad}" style="${b === "mid" ? `fill:${col}` : `fill:none;stroke:${col};stroke-width:1.5`}"><title>${day(r[COL.t])} ${hhmm(r[COL.t])} · gap ${fmtT(prep.gap[i])} · prompt ${tok(prep.prompt[i])} · reuse ${pct(prep.reuse[i] / (prep.prompt[i] || 1))}</title></circle>`;
+    }).join("")}
+    ${[0, 0.25, 0.5, 0.75, 1].map((f) => `<text class="m" x="${L + f * PW}" y="${H - 8}" text-anchor="${f === 0 ? "start" : f === 1 ? "end" : "middle"}">${day(t0 + f * (t1 - t0)).slice(5)}</text>`).join("")}
+  </svg>`;
+  $("tl-notes").textContent = busiest ? `Busiest: ${busiest[1].length} deciding turns on ${busiest[0]}, ${hhmm(D.rows[busiest[1][0]][COL.t])}–${hhmm(D.rows[busiest[1][busiest[1].length - 1]][COL.t])}, in ${new Set(busiest[1].map((i) => D.rows[i][COL.chain])).size} sessions. The route was used on ${R.days.size} of ${days} days. A verdict from one day describes one work pattern.` : "";
+}
+
+// ---------- 7. Coverage ----------
+function renderCoverage(C) {
+  const cov = C.cov;
+  const W = 1100, L = 70, PW = W - L, H = 96;
+  const segs = routes.map((R) => ({ R, tokens: [...R.models].reduce((s, m) => s + D.rows.reduce((a, r) => a + (r[COL.model] === m ? r[COL.input] + r[COL.cr] + r[COL.cw] + r[COL.out] : 0), 0), 0), cost: R.actualCost }))
+    .sort((a, b) => b.cost - a.cost);
+  const tokTot = cov.total || 1, costTot = segs.reduce((s, x) => s + x.cost, 0) || 1;
+  const bar = (y, items, tot) => { let acc = 0; return items.map((it) => { const x0 = L + (acc / tot) * PW; acc += it.v; const w = (it.v / tot) * PW;
+    return `<rect x="${x0}" y="${y}" width="${Math.max(0, w - 1)}" height="26" style="fill:${it.fill}"><title>${esc(it.title)}</title></rect>${it.est ? `<rect x="${x0}" y="${y}" width="${Math.max(0, w - 1)}" height="26" fill="url(#est)" pointer-events="none"/>` : ""}${w > 70 ? `<text x="${x0 + 6}" y="${y + 17}" style="fill:var(--card);font-weight:600">${esc(it.label)}</text>` : ""}`; }).join(""); };
+  const tokItems = segs.map((s) => ({ v: s.tokens, fill: color(s.R.key), est: s.R.estimated, label: `${s.R.label} ${pct(s.tokens / tokTot)}`, title: `${s.R.label}: ${tok(s.tokens)} tokens` }))
+    .concat(cov.excluded ? [{ v: cov.excluded, fill: "var(--line)", label: "", title: `Excluded: ${Object.entries(cov.excludedModels).map(([k, v]) => `${k} ${tok(v)}`).join(", ")}` }] : []);
+  const costItems = segs.map((s) => ({ v: s.cost, fill: color(s.R.key), est: s.R.estimated, label: `${usd(s.cost)}`, title: `${s.R.label}: ${usd(s.cost)} at API prices` }));
+  $("cov-title").textContent = `${pct(1 - cov.excluded / tokTot)} of tokens are in scope; ${pct(segs.filter((s) => s.R.estimated).reduce((a, s) => a + s.cost, 0) / costTot)} of in-scope cost rests on estimated cache writes`;
+  $("cov").innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%">
+    <text x="0" y="25" class="m">tokens</text>${bar(8, tokItems, tokTot)}
+    <text x="0" y="67" class="m">dollars</text>${bar(50, costItems, costTot)}
+  </svg><p class="sub" style="margin:4px 0 0">${segs.map((s) => `<span style="color:${color(s.R.key)}">●</span> ${esc(s.R.label)} ${tok(s.tokens)} · ${usd(s.cost)}`).join(" &nbsp; ")}${cov.excluded ? ` &nbsp; <span class="mute">■ excluded ${tok(cov.excluded)}: ${Object.keys(cov.excludedModels).map(esc).join(", ")}</span>` : ""}</p>`;
+  const replay = routes.reduce((s, R) => s + R.cost[R.actualName ?? R.short.name], 0);
+  const beyond = routes.filter((R) => R.beyond).map((R) => `${R.label} ${R.beyond}`).join(", ");
+  $("cov-notes").textContent = `Replaying each route under the policy it ran on costs ${usd(replay - costTot)} more than actual cost at API prices (${usd(costTot)}). The gap is turns that read cache after the nominal TTL (${beyond || "none"}); the replay counts them as misses. Scenarios on this page are compared with each other, not with actual cost.`;
+}
+
+// ---------- 8. Tables ----------
+function renderPolicies() {
+  const rows = [];
+  for (const [g, ps] of Object.entries(policies)) for (const [name, p] of Object.entries(ps)) {
+    const o = D.policies[g][name], edited = p.ttlSec !== o.ttlSec || p.write !== o.write;
+    rows.push(`<tr data-g="${g}" data-p="${name}"><td>${esc(g)}${routes.some((R) => R.group === g) ? "" : ` <span class="mute">(no requests)</span>`}</td><td>${esc(name)}${edited ? ` <span class="bad">hypothetical</span>` : ""}</td>
+      <td><input data-k="ttl" value="${+(p.ttlSec / 60).toFixed(2)}"></td><td><input data-k="write" value="${p.write}"></td></tr>`);
+  }
+  $("pol").innerHTML = `<table><tr><th>Group</th><th>Policy</th><th>TTL (min)</th><th>Write × input</th></tr>${rows.join("")}</table>`;
+}
+function renderModels(C) {
+  const fields = ["input", "output", "cacheRead", "cacheWrite"];
+  const list = D.models.map((_, m) => m).filter((m) => prep.group[m]).sort((a, b) => prep.route[a].localeCompare(prep.route[b]) || (C.repriced.byModel[b] ?? 0) - (C.repriced.byModel[a] ?? 0));
+  const n = D.models.map(() => 0);
+  for (const r of D.rows) n[r[COL.model]]++;
+  $("pricesub").textContent = `API prices from ${D.catalogSource} (anthropic / openai catalog entries). Edit a cell to try other prices. Actual (logged) is what pi recorded; subscription routes can log $0.`;
+  $("models").innerHTML = `<table><tr><th>Model</th><th>Route</th><th>Writes</th><th>Turns</th>${fields.map((f) => `<th>${f}</th>`).join("")}<th>Actual (API)</th><th>Actual (logged)</th></tr>
+    ${list.map((m) => { const p = prices[m], logged = D.rows.reduce((s, r) => s + (r[COL.model] === m ? r[COL.cost] : 0), 0);
+      return `<tr data-m="${m}"><td title="${esc(D.prices[m]?.source ?? "unpriced")}">${esc(D.models[m].split("/").slice(1).join("/"))}</td><td><span style="color:${color(prep.route[m])}">●</span> ${esc(LABEL[prep.route[m]] ?? prep.route[m])}</td>
+        <td>${prep.reported[m] ? "logged" : `<span class="bad">estimated (${esc(prep.actual[m])})</span>`}</td><td>${n[m]}</td>
+        ${fields.map((f) => `<td><input data-f="${f}" value="${p ? p[f] : ""}" placeholder="?"></td>`).join("")}
+        <td>${usd(C.repriced.byModel[m] ?? 0)}</td><td class="mute">${usd(logged)}</td></tr>`; }).join("")}</table>`;
+}
+
+// ---------- page ----------
+function renderRoutes() {
+  $("routes").innerHTML = routes.map((R) => `<button data-route="${esc(R.key)}" aria-pressed="${R.key === state.route}"><span class="sw" style="background:${color(R.key)}"></span>${esc(R.label)}</button>`).join(" ");
+}
+function render() {
+  const C = compute();
+  if (!state.route) state.route = ([...routes].filter((R) => R.choice).sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))[0] ?? routes[0])?.key;
+  const R = routes.find((x) => x.key === state.route);
+  $("meta").textContent = `${new Date(D.sinceMs).toLocaleDateString()} – ${new Date(D.untilMs).toLocaleDateString()} · ${D.stats.requests} turns · ${D.stats.sessions} sessions · API prices`;
+  renderRoutes(); renderVerdict(C); renderCoverage(C); renderPolicies(); renderModels(C);
+  if (R) { renderGaps(R); renderBreakEven(R); renderLedger(R); renderTimeline(R); }
+}
+renderRuler();
+
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-route]");
+  if (b) { state.route = b.dataset.route; render(); }
+});
+document.addEventListener("change", (e) => {
+  const el = e.target;
+  const pr = el.closest("tr[data-g]");
+  if (pr) { const p = policies[pr.dataset.g][pr.dataset.p]; if (el.dataset.k === "ttl") p.ttlSec = Math.max(0, Number(el.value) * 60 || 0); else p.write = Number(el.value) || 0; }
+  const mr = el.closest("tr[data-m]");
+  if (mr) { const m = +mr.dataset.m; prices[m] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }; prices[m][el.dataset.f] = Number(el.value) || 0; }
+  render();
+});
+// Linked highlight: hovering a band dims every other band's marks across charts.
+const main = document.querySelector("main");
+main.addEventListener("mouseover", (e) => {
+  const b = e.target.closest("[data-band]")?.dataset.band;
+  $("hlcss").textContent = b ? `[data-band]:not([data-band="${b}"]):not([data-band="net"]) { opacity:.2 }` : "";
+});
+render();
+</script>
+</body>
+</html>

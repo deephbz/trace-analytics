@@ -1,12 +1,15 @@
 {
-  "name": "agent-speed",
-  "version": "0.1.0",
+  "name": "agent-logs",
+  "version": "0.2.0",
   "private": true,
-  "description": "Measure TTFT floor and excess, decode speed, and stalls of coding-agent model calls.",
+  "description": "Studies of local coding-agent logs (pi, Codex, Claude Code, Magpie gateway): call speed, prompt-cache TTL, context compaction.",
   "type": "module",
-  "bin": { "agent-speed": "./bin/agent-speed.mjs" },
+  "bin": { "agent-logs": "./bin/agent-logs.mjs" },
+  "pi": { "extensions": ["./src/pi-extension.mjs"] },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "report": "node bin/agent-speed.mjs"
+    "speed": "node bin/agent-logs.mjs speed",
+    "cache-ttl": "node bin/agent-logs.mjs cache-ttl",
+    "compaction": "node bin/agent-logs.mjs compaction"
   }
 }

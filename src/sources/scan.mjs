@@ -1,15 +1,20 @@
-// Incremental scanner: session files -> rows, through a per-adapter index.
+// Incremental scanner: session files -> records, through a per-adapter index.
 //
-//   stat ─► size and mtime unchanged ─────────────────► reuse the file's rows
+//   stat ─► size and mtime unchanged ─────────────────► reuse the file's records
 //        ├► grew, same inode and head ────────────────► feed only the appended bytes
 //        └► new, shrank, or replaced ─────────────────► feed the whole file
 //
 // Agents append to session files, so a refresh costs the bytes written since the last
 // one. The index is a cache: its key holds a hash of this file and the adapter's
-// source, so a code change rebuilds it instead of serving rows from older logic.
+// source, so a code change rebuilds it instead of serving records from older logic.
 //
 // Adapter: { name, source (its module URL), list() -> paths, init(path) -> state,
 //            line(state, buf, start, end, emit) }. State must survive JSON.
+// emit(record): a CALL or COMPACTION (src/record.mjs) with `kind` "call" or "compaction",
+// or a patch { kind: "patch", of: "call" | "compaction", id, set: {fields} } for a record
+// emitted earlier from the same file. Records already emitted are never rewritten, so a
+// later fact about them (stream timing, a summary's length) arrives as a patch.
+// list() may set `excluded` on the returned array: { reason: file count }.
 
 import { createHash } from "node:crypto";
 import { mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
@@ -23,7 +28,7 @@ const CHUNK = 1 << 20;
 
 async function codeKey(adapter) {
   const h = createHash("sha256");
-  for (const u of [import.meta.url, adapter.source]) h.update(await readFile(fileURLToPath(u)));
+  for (const u of [import.meta.url, adapter.source, ...(adapter.uses ?? [])]) h.update(await readFile(fileURLToPath(u)));
   return h.digest("hex").slice(0, 12);
 }
 
@@ -76,7 +81,8 @@ export async function scan(adapter, { sinceMs, cacheDir = CACHE_DIR, useCache = 
   const indexPath = join(cacheDir, `${adapter.name}.json`);
   const index = useCache ? await loadIndex(indexPath, key) : { key, files: {} };
   const paths = await adapter.list();
-  const stats = { files: paths.length, inWindow: 0, reused: 0, appended: 0, full: 0, bytes: 0 };
+  const stats = { files: paths.length, excluded: paths.excluded ?? {}, inWindow: 0, reused: 0, appended: 0, full: 0, bytes: 0 };
+  const current = new Set();
   let dirty = false;
 
   const queue = [...paths];
@@ -86,6 +92,7 @@ export async function scan(adapter, { sinceMs, cacheDir = CACHE_DIR, useCache = 
         const st = await stat(path).catch(() => null);
         if (!st || st.mtimeMs < sinceMs) continue;
         stats.inWindow++;
+        current.add(path);
         let e = index.files[path];
         if (e && e.size === st.size && e.mtimeMs === st.mtimeMs) {
           stats.reused++;
@@ -98,10 +105,10 @@ export async function scan(adapter, { sinceMs, cacheDir = CACHE_DIR, useCache = 
           if (grew) stats.appended++;
           else {
             stats.full++;
-            e = { ino: st.ino, head, offset: 0, rows: [], state: adapter.init(path) };
+            e = { ino: st.ino, head, offset: 0, records: [], state: adapter.init(path) };
           }
           stats.bytes += st.size - e.offset;
-          e.offset = await feed(fh, e.offset, st.size, (buf, s, t) => adapter.line(e.state, buf, s, t, (row) => e.rows.push(row)));
+          e.offset = await feed(fh, e.offset, st.size, (buf, s, t) => adapter.line(e.state, buf, s, t, (r) => e.records.push(r)));
           e.size = st.size;
           e.mtimeMs = st.mtimeMs;
           index.files[path] = e;
@@ -120,5 +127,7 @@ export async function scan(adapter, { sinceMs, cacheDir = CACHE_DIR, useCache = 
     await rename(tmp, indexPath);
   }
   stats.ms = Math.round(performance.now() - started);
-  return { index, stats };
+  // Only files in this scan's window: the index can hold older ones from a wider earlier scan.
+  const files = [...current].sort().map((path) => [path, index.files[path]]);
+  return { files, stats };
 }

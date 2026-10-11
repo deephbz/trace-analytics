@@ -6,20 +6,22 @@ carried. `report.html` holds the findings; this file explains how the data
 is made.
 
 ```
-build.py ──> compactions.jsonl   one row per compaction
-   │    └──> totals.json         ordinary model calls per population (denominators),
-   │                             exclusions, ordinary decode speed per model
-   └─ denoms.mjs (agent-speed ingest: Codex call wall time, decode speed)
-analyze.py ──> stats.json, report.html (page.html + data + Paper Mono), fig-*.png
+agent-logs compaction ──► compactions.jsonl   one row per compaction
+                     ├──► totals.json         ordinary model calls per population (denominators),
+                     │                        exclusions, ordinary decode speed per model
+                     ├──► stats.json          profiles, shares, fits, factors
+                     └──► report.html         src/reports/compaction/page.html + data + Paper Mono
 ```
 
-Run from this directory:
+Run from the repository root:
 
 ```sh
-python3 -I build.py 28          # window in days
-uv run --with matplotlib --with numpy python -I analyze.py
-open report.html
+node bin/agent-logs.mjs compaction 2026-09-13T10:08:20Z 2026-10-11T10:08:20Z --out research/compaction
 ```
+
+The derivations live in `src/analytics/compaction.mjs`; the record fields they
+read are defined in `src/record.mjs`. The files here cover 2026-09-13T10:08Z to
+2026-10-11T10:08Z.
 
 ## Sources and field semantics
 
@@ -28,12 +30,32 @@ open report.html
 | pi native | `compaction` entry with a summary | entry `usage`; cache split from the Magpie ledger (1-2 parallel requests whose output sums to the entry's) | Magpie ledger, else the entry gap (≤ 10 min) |
 | pi blackmagic | `compaction` entry, `details.state = remote_applied` | `details.usage`, no cache split | `details.latencyMs` |
 | Codex | `compacted` rollout item | `token_usage_record` with `response_id = compaction_response_id` | usage record time − last synchronous line |
-| Claude Code | `compact_boundary` system entry | estimated (summary chars / 3.6) | `compactMetadata.durationMs` |
+| Claude Code | `compact_boundary` system entry | estimated (summary text chars / 3.6) | `compactMetadata.durationMs` |
 
-Exclusions (counted in `totals.json`): Magpie bridge transcripts in
+The next request is the first call under the compaction on the session's
+conversation path that started after the compaction ended.
+
+Exclusions (in `totals.json`): Magpie bridge transcripts in
 `~/.claude/projects/*magpie-c*`; Codex compactions a forked thread inherits
-from its parent; copies of pi sessions in the evaluation home; resumed Claude
-Code copies; wall times implying under 5 output tok/s (idle time).
+from its parent; resumed Claude Code copies; wall times implying under 5
+output tok/s (idle time).
 
-Cost is list price per token (pi-ai and Magpie price tables), also for
-subscription traffic.
+Cost is list price per token (`src/analytics/prices.mjs`: the API vendor's
+catalog entry), also for subscription traffic.
+
+## Changes from the Python build (2026-10-11)
+
+The study moved from `build.py`, `analyze.py`, and `denoms.mjs` to the shared
+adapters. On the same window, Codex rows, totals, and shares are identical.
+Differences:
+
+- Each call and compaction is in the window by its start; the old build had no
+  upper bound.
+- An agent turn is a call that answers a user input. The old build counted user
+  entries, including copies in resumed Claude Code sessions.
+- Claude Code summary length counts the summary's text. The old build counted
+  its JSON, about 3% more.
+- A Claude Code compaction's previous call follows the conversation path, not
+  file order.
+- Prices come from pi's catalog snapshot, not the pi-ai data tables.
+- The matplotlib figures are gone; the page draws its charts.

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>agent-speed</title>
+<title>agent-logs · speed</title>
 <style>
   @font-face { font-family:"Paper Mono"; src:url(/*FONT*/) format("woff2"); font-weight:100 900; font-display:block; }
   /* Phases of a call's wall time: waiting in stone, decoding in ink, stalls in rust. Providers take hues outside that range. */
@@ -29,7 +29,7 @@
 </style>
 </head>
 <body>
-<h1>agent-speed</h1>
+<h1>agent-logs · speed</h1>
 <div class="m" id="head"></div>
 
 <h2>Where call time goes</h2>
@@ -228,7 +228,7 @@ function stallHist(pts) {
 
 function prov() {
   const c = R.constants, s = R.source;
-  $("prov").innerHTML = `<p>Formulas live in <code>src/metrics.mjs</code>; this page renders <code>report.json</code>.</p><ul>
+  $("prov").innerHTML = `<p>Formulas live in <code>src/analytics/speed.mjs</code>; this page renders <code>report.json</code>.</p><ul>
   <li><b>End-to-end</b>: all output tokens, reasoning included, over wall time from request start to the end of the response. Per-call quantiles; <i>pooled</i> is total output over total wall time.</li>
   <li><b>TTFT</b>: request start to first streamed content of any kind, reasoning included. pi: as pi-tps measures it. codex: last input line to the first model item's start; Codex's own TTFT counts the first visible message instead.</li>
   <li><b>TTFT floor</b>: ln TTFT = a + b·context, fitted to the ${c.FLOOR_Q} quantile of equal-count context bins. <b>TTFT variance</b> = TTFT − floor: queueing, stalls before the first token, hidden reasoning, or buffered generation.</li>

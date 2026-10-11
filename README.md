@@ -1,9 +1,105 @@
-# agent-speed
+# agent-logs
 
-Status: exploration. Adapters for pi, Codex, and the Magpie gateway ledger. The name is provisional.
+Status: exploration. The repository is still named `agent-speed`; the package is `agent-logs`.
 
-Measures how fast model calls are, as a coding agent sees them. Each call's wall
-time splits into five parts with different causes:
+Studies of local coding-agent logs: how fast model calls are, which prompt-cache
+retention would cost least, and what context compaction costs. All three run
+the same pipeline on the same adapters.
+
+```
+ sources (knowledge)              analytics (intentions)             reports (presentation)
+ ─────────────────────            ─────────────────────────          ──────────────────────
+ pi ────────┐                     speed.mjs ─────────────────────►   speed/      text, page
+ codex ─────┤  scan ─► load ─►    cache-ttl/ table ─► sim ───────►   cache-ttl/  text, page (reruns sim)
+ claude ────┤  (CALL,             compaction.mjs ────────────────►   compaction/ text, page
+ magpie ────┘   COMPACTION)       prices, rates, stats (shared)
+                    ▲
+             src/record.mjs: the protocol
+```
+
+- **Sources** (`src/sources/`) know each harness: its files, schemas, quirks, and
+  what it does not log. Each adapter maps its files to two record kinds.
+- **The protocol** (`src/record.mjs`) defines CALL and COMPACTION. A field is
+  `null` when the source does not log it; adapters never impute.
+- **Analytics** (`src/analytics/`) hold the questions and their formulas. They
+  read records only, so a new harness needs only an adapter.
+- **Reports** (`src/reports/`) render a result as text and as a page. They never
+  read sources.
+- `src/pipeline.mjs` wires the layers per study. `test/boundaries.test.mjs`
+  enforces the import rules.
+
+## Use
+
+```
+node bin/agent-logs.mjs <study> [since] [until] [--out dir] [--no-open] [--prices file] [--no-cache]
+node bin/agent-logs.mjs <study> [since] --serve [--port n] [--no-open]
+```
+
+| Study | Question | Default window | Sources | Files |
+|---|---|---|---|---|
+| `speed` | How fast are calls, and where does call time go? | 14d | pi, codex, claude, magpie | `report.json`, `report.html` |
+| `cache-ttl` | Which cache retention would have cost least, per route? | 7d | pi | `data.json` (page: `--serve`) |
+| `compaction` | How often do agents compact, at what cost and wait? | 28d | pi, codex, claude, magpie | `compactions.jsonl`, `stats.json`, `totals.json`, `report.html` |
+
+`since`, `until`: `14d`, `12h`, `2026-09-26` (UTC midnight), or ISO time. Output
+goes to `out/<study>/<since>_<until>/` by default. `--serve` rebuilds the result
+on request, at most every 5 s; a relative `since` rolls with the clock.
+
+In pi, `/ttl-backtest [since] [until] [--prices file] [--no-serve] [--no-open]`
+(`src/pi-extension.mjs`) runs the cache-ttl study with the live model registry's
+prices. It snapshots that catalog to `~/.pi/agent/ttl-backtester/catalog.json`,
+which the CLI uses for prices; without it the CLI reads `models-store.json` and
+`models.json`.
+
+`npm test` checks the adapters (appended reads equal one whole read, Codex call
+timing, Codex compaction claims, Claude Code messages and copies, ledger dedup
+and summarizer links), the speed fits, the cache replay, the compaction joins,
+and the layer boundaries.
+
+## Sources
+
+| Adapter | Files | Timing | Not logged |
+|---|---|---|---|
+| `pi` | `~/.pi/agent/sessions/*/*.jsonl` | update-level, from [pi-tps](https://github.com/monotykamary/pi-tps) `custom/tps` entries | cache writes on routes that fold them into input |
+| `codex` | `~/.codex/sessions`, `archived_sessions` rollouts | item-level, rebuilt from item times | cache writes, stalls |
+| `claude` | `~/.claude/projects/*/*.jsonl` | request start and end only | stream timing, reasoning tokens, compaction usage |
+| `magpie` | `~/.config/magpie/usage.jsonl` (gateway ledger) | first token and end, at the gateway | session, lineage, stalls |
+
+Each adapter's header comment holds its rules. Points that cross adapters:
+
+- **Lineage.** pi and Claude Code sessions are trees; `lineage.mjs` gives each call
+  its `prev` call, the compaction or branch summary between, and its cause. Codex
+  rollouts are linear.
+- **Copies.** Resumed and forked sessions copy earlier records. `load()` keeps one
+  per source: same response id, or same id and start.
+- **The ledger gives way.** A ledger call another source has is dropped: same
+  response id, or equal output within 1 s. Its remaining calls group under
+  `gateway/<route>` in speed: the gateway's clock leaves out the agent's own time.
+- **pi's summarizer requests.** pi logs only the summed usage of its native
+  compaction's one or two requests. `load()` links the ledger calls whose output
+  sums to it and that end at most 5 min before the entry.
+- **Magpie's Claude bridge** drives Claude Code as transport for other agents. Its
+  transcripts (`*magpie-c*` project dirs) are skipped; the ledger has those calls.
+- **Incremental scan.** Agents append to session files, so `scan.mjs` reads only
+  the bytes written since the last run, with the adapter's saved state. The cache
+  (`~/.cache/agent-speed/<adapter>.json`) is keyed by a hash of the code, so a code
+  change rebuilds it. Warm: 0.3 s for 14 days (76k calls).
+
+Known limits:
+
+- pi-tps measures TTFT from turn start, so it includes pi's request setup. It
+  starts `streamMs` at the second update but can count the pause before it as a
+  stall: the span is `max(stream, stall)`, a lower bound.
+- Codex request start is the last input line before the first model item. TTFT
+  counts the first model item of any kind, reasoning included; Codex's own figure
+  counts the first visible message. Calls with no model item are compaction
+  requests (claimed by a `compacted` line) or aborted.
+- Claude Code subagent transcripts (`<session>/subagents/`) are not read yet.
+
+## Speed
+
+`src/analytics/speed.mjs` is the authority for every formula and threshold. A
+call's wall time splits into parts with different causes:
 
 ```
 request ─► first token ─────────────────────────────► last update ─► end
@@ -11,93 +107,65 @@ request ─► first token ─────────────────�
                                    └──── stall during decoding ─┘   after last token
 ```
 
-- **End-to-end speed** (headline): all output tokens over wall time, request start
-  to the end of the response. It needs no stream timing, so held delivery does not
-  bias it.
-- **TTFT floor**: the part of time to first token that the context length explains.
-- **TTFT variance**: TTFT above the floor. Queueing, stalls before the first token,
-  hidden reasoning, or buffered generation.
-- **Decoding**: first token to last update, less stalls. **Decode speed** is visible
-  output tokens over decoding time.
-- **Stall during decoding**: a pause of 500 ms or more after the first token. Hidden
-  reasoning also shows as one, so stall statistics use calls without reasoning.
-- **Stall after last token**: time from the last streamed update to the end of the
-  response.
-- **Held delivery**: a server or proxy released the reply in a burst. Decode speed
-  is then not identifiable, and generation time sits in TTFT variance.
+- **End-to-end speed** (headline): all output tokens over wall time. It needs no
+  stream timing, so held delivery does not bias it.
+- **TTFT floor**: the part of time to first token that context length explains:
+  a fit of the 10th percentile of ln(TTFT) against context. Read it for prefill.
+- **TTFT variance**: TTFT above the floor: queueing, early stalls, hidden
+  reasoning, or buffered generation.
+- **Decode speed**: visible output over decoding time (first token to last update,
+  less stalls). Not identifiable on routes with held delivery.
+- **Stalls**: pauses of 500 ms or more. Stall statistics use calls without
+  reasoning, because hidden reasoning also shows as a pause.
 
-`src/metrics.mjs` is the authority for every formula and threshold.
+Population: calls with a streamed first token and output. Claude Code calls have
+no stream timing and do not enter it.
 
-## Scope
+## Cache TTL
 
-- In scope: per-call speed metrics, their definitions, the report artifact, and its
-  rendering. One adapter per agent maps the agent's session files to the row schema
-  in `src/metrics.mjs`.
-- Adapters:
-  - `pi`: [pi-tps](https://github.com/monotykamary/pi-tps) `custom/tps` entries
-    joined to their assistant messages. Update-level timing.
-  - `codex`: Codex rollouts in `~/.codex/sessions` and `archived_sessions`, rebuilt
-    into calls from item timing. Item-level timing: decode speed and stalls during
-    decoding are not visible; the report shows that time as "decoding incl. stalls".
-  - `magpie`: the Magpie gateway's ledger, `~/.config/magpie/usage.jsonl`. It fills
-    gaps: calls whose session files are gone or have no pi-tps timing, such as
-    benchmark harness runs. A ledger call that another source has is dropped: same
-    response id, or, for records without one, equal output tokens with request start
-    within 1 s. Its routes are `gateway/<model>`, apart from the agent-side routes,
-    because the gateway's clock leaves out the agent's own time. Stalls are not seen.
-- Not yet: Claude Code sessions that bypass Magpie. Their files have no per-call
-  stream timing.
-- Non-goals: cost, routing decisions, alerting.
+`src/analytics/cache-ttl/`: `policies.mjs` hard-codes provider terms with source
+URLs and a check date; `sim.mjs` replays requests; `table.mjs` builds its rows.
 
-## Use
+- A request's predecessor is its `prev` call on the same route with no compaction
+  or branch summary between. It counts even before the window.
+- The reusable prefix is the predecessor's `cacheRead + cacheWrite` where the
+  route logs writes, else its whole prompt. Whether a route logs writes is
+  inferred from the data per route.
+- Under TTL T, a request hits when its start is within T of the predecessor's.
+  Observed reads win where they decide the outcome; only expiry-explained misses
+  are imputed.
+- Prices are public API prices for every route (`prices.mjs`: the vendor's
+  catalog entry by normalized model id). "Actual (logged)" is what pi recorded.
 
-```
-node bin/agent-speed.mjs                 # last 14 days, written to out/
-node bin/agent-speed.mjs 2026-09-26 2026-10-10 --out reports/x --no-open
-node bin/agent-speed.mjs 14d --serve     # live view: rolling window, refreshes every 30 s
-```
+| Group | Models | Policies | Write × input |
+|---|---|---|---|
+| `anthropic` | `claude-*` | 5m (default), 1h | 1.25, 2 |
+| `openai-30m` | GPT-5.6 and later | 30m only | 1.25 |
+| `openai-legacy` | earlier GPT, o-series | in_memory, 24h (default) | 1 |
 
-The CLI prints a text summary and writes `report.json` (the artifact: summaries,
-fits, per-call points, window, constants, code version, per-source scan stats) and
-`report.html` (a self-contained rendering of it) to `out/<since>_<until>/` by default.
+The page reruns `sim.mjs` in the browser, so prices and policies are editable.
+Not modeled: prefixes shared across sessions, the minimum cacheable length, and
+retention beyond the nominal TTL.
 
-```
-adapter.list() ─► scan.mjs ─► rows ─ ingest.mjs (window) ─ metrics.mjs ─► report.mjs ─► report.json ─► report.html
-                     │
-                     └─ ~/.cache/agent-speed/<adapter>.json   per file: size, mtime, inode, head, offset, rows, state
-```
+## Compaction
 
-Ingest is incremental. Agents append to session files, so the scanner reads only
-the bytes written since the last run, from the saved offset, with the adapter's
-saved state. A file that shrank or changed its head is read again. The cache key
-holds a hash of `scan.mjs` and the adapter, so a code change rebuilds the cache.
-Cost on 14 days of data (3.6 GB, 63k calls): 3–4 s cold, 0.8 s warm for the CLI,
-0.1–0.5 s per live refresh.
+`src/analytics/compaction.mjs` derives one row per compaction (request tokens,
+wall time, cost, the context the next request carried, hc-auto-compact handoff
+turns) and the ordinary calls of each population as denominators.
+`research/compaction/` holds the findings: run with `--out research/compaction`.
 
-The page uses [Paper Mono](https://github.com/paper-design/paper-mono) v1.000
-(`web/fonts`, SIL Open Font License 1.1), inlined so `report.html` stays one file.
+- Claude Code logs no usage for its summary request: output is estimated from
+  the summary's length (3.6 characters per token), and the history counts as
+  cached when the previous call ended under 1 hour before.
+- pi blackmagic keeps no cache split: its cost is a range.
+- A wall time under 5 output tok/s holds idle time and is dropped.
+- An agent turn is a call that answers a user input.
 
-`npm test` checks the floor fit, the held-delivery rule, that appended reads give
-the rows of one whole read, the codex call rules, and the ledger dedup.
+The page holds the narrative, written for the 28-day study window; shorter
+windows can lack the rows its text cites.
 
-## Known limits of the pi source
+## Fonts
 
-- pi-tps measures TTFT from turn start, so it includes pi's own request setup.
-- Wall time comes from the assistant entry: `message.timestamp` at request start,
-  the entry's `timestamp` when pi appends the finished message.
-- pi-tps starts `streamMs` at the second update but can count the pause before it
-  as a stall. The span is therefore `max(stream, stall)`, a lower bound.
-- pi-tps keeps no per-update times, so held delivery is detected per call from the
-  whole call, not from the content's flow as Magpie's `flow_ms` does.
-
-## Known limits of the codex source
-
-- Request start is the last input line before the call's first model item. Codex
-  writes it within milliseconds of sending; turn setup before it is not in TTFT.
-- TTFT counts the first model item of any kind, reasoning included. Codex's own
-  `time_to_first_token_ms` counts the first visible message and starts at
-  `task_started`. On 8,540 single-call turns, the first visible message's start
-  matched Codex's figure within 5 ms (median), and the call end matched
-  `duration_ms` within 5 ms.
-- Calls with no model item (414 in 14 days) and calls whose first item started
-  before any input line (6) are skipped and counted in the report's sources.
+The pages use [Paper Mono](https://github.com/paper-design/paper-mono) v1.000
+(`src/reports/fonts`, SIL Open Font License 1.1), inlined so written pages stay
+one file.
