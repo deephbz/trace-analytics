@@ -9,8 +9,8 @@ utilisation factors and synchronisation delays are illustrative assumptions.
 Run `python3 -I research/inference-physics/build.py` from the repository root.
 The script uses `page.html`, `benchmark.json`, and the repository's Paper Mono font.
 It writes the self-contained `index.html`; no server or JavaScript package build
-is required. A Pages deployment can copy that file to its artifact root. No Pages
-workflow is configured here.
+is required. `.github/workflows/pages.yml` publishes the committed `index.html` to
+GitHub Pages on each push to `main` that changes it.
 
 `benchmark.json` contains only model/arm labels, numeric benchmark measurements,
 and regression coefficients. It excludes session IDs, private paths, probe
