@@ -104,7 +104,7 @@ export function analyzeConditional(data,pricesByRoute={}) {
     unpriced,purged:obs.rows.length-train.length-test.length,censored:obs.censored,branched:obs.branched,invalid:obs.invalid,
     referenceThreshold:(W1-W5)/(W5-.1),mean,sequential,
     sequentialBest:sequentialBest.requests?sequentialBest.policy:null,deltaVsPooledCI:ci,pooledChoice,conditionalSupported,
-    recommendation:conditionalSupported?'Conditional policy is a candidate for a controlled marker-level trial.':`No validated advantage for conditional TTL switching. Best held-out sequential proxy: ${sequentialBest.requests?sequentialBest.policy:'unavailable'}. Verify route control and marker-level economics before changing Cache Goblin.`, 
+    recommendation:conditionalSupported?'Conditional policy is a candidate for a controlled marker-level trial.':`No validated advantage for conditional TTL switching. Best held-out sequential proxy: ${sequentialBest.requests?sequentialBest.policy:'unavailable'}. Verify route control and marker-level economics before changing Cache Goblin.`,
     calibration:bins.filter(b=>b.n).map(b=>({...b,predicted:b.predicted/b.n,observed:b.observed/b.n})),
     groups:Object.entries(full.groups).map(([condition,g])=>({condition,n:g.n,p:g.p,choiceAtReadRatioPointOne:choice(g.p)})).sort((a,b)=>b.n-a.n),
     pooled:full.pooled,model,scored,
