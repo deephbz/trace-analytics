@@ -1,6 +1,6 @@
 # Compaction methods in pi: local benchmark
 
-`report.html` compares four compaction methods on real pi session slices, driven
+`results/compaction-bench/current/report.html` compares four compaction methods on real pi session slices, driven
 through pi itself (RPC mode) on the Claude subscription (Magpie) and the Codex
 subscription:
 
@@ -27,10 +27,13 @@ analyze.py  rows + judge -> stats.json, report.html (page.html + Paper Mono)
 
 Reproduction requires private source sessions and configured pi subscriptions.
 Set `BENCH_KEEPSET_EXTENSION` and `BENCH_BLACKMAGIC_EXTENSION` to the absolute
-paths of the external extensions before selecting those arms. The slice selector
-currently contains local source coordinates and needs a separate publication review.
+paths of the external extensions before selecting those arms. All data paths are
+under `results/compaction-bench/current/` at the repo root. Put private session
+selectors in `sessions.local.json` there: label → `<pi session dir>/<file prefix>`.
+The `runs/` entries preserve distinct treatments and controls; judge passes measure
+agreement. Keep those variants when cleaning retries. See `AGENTS.md` for retention.
 
-Reproduce:
+Reproduce from this source directory (these commands can incur model costs):
 
 ```
 uv run --with tiktoken python -I slice.py
@@ -53,5 +56,5 @@ session content. Rows, judgements, and slice metadata also contain private text.
 Some were tracked in earlier commits. The local ignore rules do not sanitize
 those commits; audit history before publication.
 
-The self-contained public teaching artifact is `../inference-physics/index.html`.
-Its numeric snapshot lets it rebuild without these private files.
+The public teaching artifact is `../inference-physics/index.html`.
+It builds from reviewed aggregates without private files.

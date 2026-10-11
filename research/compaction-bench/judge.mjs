@@ -16,7 +16,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
+const HERE = fileURLToPath(new URL("../../results/compaction-bench/current/", import.meta.url));
 const run = promisify(execFile);
 const JUDGE = ["--provider", "magpie", "--model", "claude/claude-opus-5-5", "--thinking", "medium"];
 const OUT = join(HERE, process.env.JUDGE_OUT ?? "judge.json"); // JUDGE_OUT=judge2.json: a second pass measures judge agreement

@@ -8,7 +8,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MODELS, Rpc, turn } from "./bench.mjs";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
+const HERE = fileURLToPath(new URL("../../results/compaction-bench/current/", import.meta.url));
 const ASK = "[Benchmark timing probe] Do not call any tools. Reply with exactly: OK";
 const index = JSON.parse(readFileSync(join(HERE, "slices", "index.json"), "utf8"));
 

@@ -1,29 +1,54 @@
-"""Build index.html: page.html + Paper Mono + numeric benchmark rows.
+"""Build the public explainer from approved aggregates, template, and font.
 
-Only numeric fields leave rows.json; probe answers and judge notes stay out.
-Run: python3 -I build.py
+Reject unexpected fields and undersized groups before embedding any data.
+This structural check supplements semantic publication review.
 """
-import base64, json, os, sys
+from pathlib import Path
+import base64
+import json
+import math
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-BENCH = f"{HERE}/../compaction-bench"
-FONT = f"{HERE}/../../src/reports/fonts/PaperMono-wght.woff2"
+HERE = Path(__file__).resolve().parent
+MODELS = {"sonnet", "sol"}
+ARMS = {"native", "blackmagic", "summary", "keepset", "summaryc", "keepsetc"}
 
-SNAPSHOT = f"{HERE}/benchmark.json"
-if "--refresh-benchmark" in sys.argv:
-    rows = json.load(open(f"{BENCH}/rows.json"))
-    stats = json.load(open(f"{BENCH}/stats.json"))
-    keep = ("model", "arm", "wall_s", "c_out", "before", "after", "cost")
-    data = dict(
-        rows=[{k: r.get(k) for k in keep} for r in rows if not r.get("control") and r.get("ok")],
-        fit_out={m: stats["models"][m]["fit_wall_out"] for m in stats["models"]},
-        fit_before={m: stats["models"][m]["fit_wall_before"] for m in stats["models"]},
-    )
-    json.dump(data, open(SNAPSHOT, "w"), indent=2)
-else:
-    data = json.load(open(SNAPSHOT))
-font = base64.b64encode(open(FONT, "rb").read()).decode()
-page = open(f"{HERE}/page.html").read()
-page = page.replace("/*FONT*/", f"url(data:font/woff2;base64,{font})").replace("/*DATA*/null", json.dumps(data))
-open(f"{HERE}/index.html", "w").write(page)
-print("index.html", len(page) // 1024, "KiB,", len(data["rows"]), "rows")
+
+def validate(data):
+    def require(condition):
+        if not condition:
+            raise ValueError("Public aggregate schema violation")
+    def number(value):
+        return type(value) in (int, float) and math.isfinite(value)
+    def count(value):
+        return type(value) is int and value >= 5
+    require(set(data) == {"groups", "fit_out", "fit_before"})
+    require(isinstance(data["groups"], list) and bool(data["groups"]))
+    seen = set()
+    for group in data["groups"]:
+        require(set(group) == {"model", "arm", "n", "c_out", "wall_s"})
+        require(group["model"] in MODELS and group["arm"] in ARMS)
+        key = (group["model"], group["arm"])
+        require(key not in seen)
+        seen.add(key)
+        require(count(group["n"]))
+        require(all(number(group[k]) and group[k] >= 0 for k in ("c_out", "wall_s")))
+    for name in ("fit_out", "fit_before"):
+        require(set(data[name]) == MODELS)
+        for fit in data[name].values():
+            require(set(fit) == {"n", "a", "b", "r2"} and count(fit["n"]))
+            require(all(number(fit[k]) for k in ("a", "b", "r2")))
+    return data
+
+
+def build():
+    data = validate(json.loads((HERE / "aggregates.json").read_text()))
+    font = base64.b64encode((HERE / "../../src/reports/fonts/PaperMono-wght.woff2").read_bytes()).decode()
+    page = (HERE / "page.html").read_text()
+    page = page.replace("/*FONT*/", f"url(data:font/woff2;base64,{font})")
+    page = page.replace("/*DATA*/null", json.dumps(data))
+    (HERE / "index.html").write_text(page)
+    print("Built index.html from", len(data["groups"]), "aggregate groups")
+
+
+if __name__ == "__main__":
+    build()

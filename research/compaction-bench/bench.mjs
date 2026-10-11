@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-const HERE = dirname(fileURLToPath(import.meta.url));
+const HERE = fileURLToPath(new URL("../../results/compaction-bench/current/", import.meta.url));
 // Supply absolute extension paths for the selected experimental arms.
 const KEEPSET = process.env.BENCH_KEEPSET_EXTENSION;
 const BLACKMAGIC = process.env.BENCH_BLACKMAGIC_EXTENSION;

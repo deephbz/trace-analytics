@@ -2,7 +2,7 @@
 
 Exploration study. One row per compaction from local pi, Codex, and Claude Code
 logs, with request tokens, wall time, cost, and the context the next request
-carried. `report.html` holds the findings; this file explains how the data
+carried. `results/compaction/current/report.html` holds the local findings; this file explains how the data
 is made.
 
 ```
@@ -16,7 +16,7 @@ trace-analytics compaction ──► compactions.jsonl   one row per compaction
 Run from the repository root:
 
 ```sh
-node bin/trace-analytics.mjs compaction 2026-09-13T10:08:20Z 2026-10-11T10:08:20Z --out research/compaction
+node bin/trace-analytics.mjs compaction 2026-09-13T10:08:20Z 2026-10-11T10:08:20Z --out results/compaction/current
 ```
 
 The derivations live in `src/analytics/compaction.mjs`; the record fields they

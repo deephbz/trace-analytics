@@ -5,7 +5,7 @@ Sol: RPC events only (in-session turns stream through pi; native summarizer call
 Writes timing.json.
 """
 import json, glob, datetime as dt, os
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../results/compaction-bench/current"))
 L = [json.loads(l) for l in open(os.path.expanduser("~/.config/magpie/usage.jsonl"))]
 L = [r for r in L if r.get("t", "") >= "2026-10-11" and r.get("served", "").startswith("claude-sonnet-5-5")]
 for r in L:

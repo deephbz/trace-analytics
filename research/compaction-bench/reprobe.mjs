@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Rpc, turn } from "./bench.mjs";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
+const HERE = fileURLToPath(new URL("../../results/compaction-bench/current/", import.meta.url));
 export const PROBE2 = [
   "[Benchmark probe] This is a measurement step, not a new task. Answer from your current context, under three headings.",
   "REQUEST: the task you were working on before this message, and the latest instruction you received about it. Do not describe this message.",

@@ -1,0 +1,109 @@
+{
+  "groups": [
+    {
+      "model": "sol",
+      "arm": "blackmagic",
+      "n": 9,
+      "c_out": 3500,
+      "wall_s": 100
+    },
+    {
+      "model": "sol",
+      "arm": "keepset",
+      "n": 9,
+      "c_out": 2000,
+      "wall_s": 62
+    },
+    {
+      "model": "sol",
+      "arm": "keepsetc",
+      "n": 9,
+      "c_out": 1900,
+      "wall_s": 63
+    },
+    {
+      "model": "sol",
+      "arm": "native",
+      "n": 9,
+      "c_out": 2100,
+      "wall_s": 59
+    },
+    {
+      "model": "sol",
+      "arm": "summary",
+      "n": 9,
+      "c_out": 3000,
+      "wall_s": 89
+    },
+    {
+      "model": "sol",
+      "arm": "summaryc",
+      "n": 9,
+      "c_out": 2700,
+      "wall_s": 84
+    },
+    {
+      "model": "sonnet",
+      "arm": "keepset",
+      "n": 9,
+      "c_out": 2800,
+      "wall_s": 22
+    },
+    {
+      "model": "sonnet",
+      "arm": "keepsetc",
+      "n": 9,
+      "c_out": 3200,
+      "wall_s": 26
+    },
+    {
+      "model": "sonnet",
+      "arm": "native",
+      "n": 9,
+      "c_out": 3700,
+      "wall_s": 27
+    },
+    {
+      "model": "sonnet",
+      "arm": "summary",
+      "n": 9,
+      "c_out": 3400,
+      "wall_s": 26
+    },
+    {
+      "model": "sonnet",
+      "arm": "summaryc",
+      "n": 9,
+      "c_out": 3100,
+      "wall_s": 25
+    }
+  ],
+  "fit_out": {
+    "sonnet": {
+      "n": 45,
+      "a": 1.2703,
+      "b": 7.4084,
+      "r2": 0.9792
+    },
+    "sol": {
+      "n": 54,
+      "a": 5.9482,
+      "b": 27.4861,
+      "r2": 0.9614
+    }
+  },
+  "fit_before": {
+    "sonnet": {
+      "n": 45,
+      "a": 25.9647,
+      "b": -0.0036,
+      "r2": 0.0006
+    },
+    "sol": {
+      "n": 54,
+      "a": 92.4449,
+      "b": -0.0985,
+      "r2": 0.0394
+    }
+  }
+}

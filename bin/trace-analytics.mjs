@@ -70,7 +70,7 @@ if (argv.includes("--serve")) {
   const window = windowAt(Date.now(), pos[2]);
   const result = await build(window);
   const day = (ms) => new Date(ms).toISOString().slice(0, 10);
-  const out = resolve(opt("--out") ?? join(ROOT, "out", name, `${day(window.sinceMs)}_${day(window.untilMs)}`));
+  const out = resolve(opt("--out") ?? join(ROOT, "results", name, `${day(window.sinceMs)}_${day(window.untilMs)}`));
   await mkdir(out, { recursive: true });
   const files = await study.files(result, ctx);
   for (const [f, body] of Object.entries(files)) await writeFile(join(out, f), body);

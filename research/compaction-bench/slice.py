@@ -24,9 +24,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tok import ENC, tokens
 
 HOME = os.path.expanduser("~")
-HERE = os.path.dirname(os.path.abspath(__file__))
-# Session selectors: label -> "<pi session dir>/<file name prefix>". They name private
-# sessions, so they live in a local file next to this one (sessions.local.json, gitignored).
+HERE = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../results/compaction-bench/current"))
+# Private session selectors: label -> "<pi session dir>/<file name prefix>".
 SESSIONS_FILE = os.path.join(HERE, "sessions.local.json")
 SESSIONS = json.load(open(SESSIONS_FILE)) if os.path.exists(SESSIONS_FILE) else {}
 SYSTEM = 3300

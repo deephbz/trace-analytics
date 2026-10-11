@@ -1,6 +1,6 @@
 # trace-analytics
 
-Status: exploration.
+Status: exploration. Repo scope, privacy, and result retention: [AGENTS.md](AGENTS.md).
 
 Studies of local coding-agent logs: how fast model calls are, which prompt-cache
 retention would cost least, and what context compaction costs. All three run
@@ -42,7 +42,7 @@ node bin/trace-analytics.mjs <study> [since] --serve [--port n] [--no-open]
 | `compaction` | How often do agents compact, at what cost and wait? | 28d | pi, codex, claude, magpie | `compactions.jsonl`, `stats.json`, `totals.json`, `report.html` |
 
 `since`, `until`: `14d`, `12h`, `2026-09-26` (UTC midnight), or ISO time. Output
-goes to `out/<study>/<since>_<until>/` by default. `--serve` rebuilds the result
+goes to `results/<study>/<since>_<until>/` by default. `--serve` rebuilds the result
 on request, at most every 5 s; a relative `since` rolls with the clock.
 
 In pi, `/ttl-backtest [since] [until] [--prices file] [--no-serve] [--no-open]`
@@ -152,7 +152,7 @@ retention beyond the nominal TTL.
 `src/analytics/compaction.mjs` derives one row per compaction (request tokens,
 wall time, cost, the context the next request carried, hc-auto-compact handoff
 turns) and the ordinary calls of each population as denominators.
-`research/compaction/` holds the study's notes; run with `--out research/compaction`.
+`research/compaction/` holds the study's notes; run with `--out results/compaction/current`.
 Its outputs derive from private session logs and stay out of git (`.gitignore`).
 
 - Claude Code logs no usage for its summary request: output is estimated from

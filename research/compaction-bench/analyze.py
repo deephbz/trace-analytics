@@ -11,7 +11,8 @@ Run: python3 -I analyze.py
 
 import base64, json, os, statistics as st
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+SOURCE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.abspath(os.path.join(SOURCE, "../../results/compaction-bench/current"))
 CACHE_READ = {"sonnet": 0.2, "sol": 0.1}  # USD per Mtok: price of carrying context into each later request
 ARMS = {"sonnet": ["native", "summary", "keepset", "summaryc", "keepsetc"], "sol": ["native", "blackmagic", "summary", "keepset", "summaryc", "keepsetc"]}
 
@@ -224,9 +225,9 @@ def main():
             "kept_tokens", "kept_rounds", "rounds", "summary_chars", "probe_cost", "out_tps", "answer_v1", "cache_share", "q_request", "q_next", "q_facts", "q_note", "answer", "latency_s"]
     data = json.dumps({"stats": stats, "rows": [{k: r.get(k) for k in keep} for r in rows], "controls": [{k: r.get(k) for k in ("id", "slice", "session", "model", "tier", "after", "q_request", "q_next", "q_facts", "q_note", "answer")} for r in controls],
                        "slices": {k: {f: v[f] for f in ("session", "model", "tier", "entries", "tool_calls", "est_o200k", "predicted", "source")} for k, v in index.items()}}).replace("<", "\\u003c")
-    if os.path.exists(f"{HERE}/page.html"):
-        font = base64.b64encode(open(f"{HERE}/../../src/reports/fonts/PaperMono-wght.woff2", "rb").read()).decode()
-        page = open(f"{HERE}/page.html").read()
+    if os.path.exists(f"{SOURCE}/page.html"):
+        font = base64.b64encode(open(f"{SOURCE}/../../src/reports/fonts/PaperMono-wght.woff2", "rb").read()).decode()
+        page = open(f"{SOURCE}/page.html").read()
         open(f"{HERE}/report.html", "w").write(page.replace("/*FONT*/", f"data:font/woff2;base64,{font}").replace("/*DATA*/null", data))
 
 

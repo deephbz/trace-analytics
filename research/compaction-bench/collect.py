@@ -17,7 +17,7 @@ Run: python3 -I collect.py  ->  rows.json
 
 import json, os, re
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../results/compaction-bench/current"))
 # USD per Mtok, list price (pi model data): input, output, cacheRead, cacheWrite
 PRICE = {"sonnet": (2, 10, 0.2, 2.5), "sol": (2, 10, 0.1, 2.5)}
 

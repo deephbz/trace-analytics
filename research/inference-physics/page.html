@@ -160,7 +160,7 @@ cost ≈ uncached × p_in + cached × p_cache + output × p_out</pre>
 <li>The toy machine ignores many real effects: kernel efficiency, network hops, speculative decoding, quantization below 8 bits, shared prefixes between users, and scheduling policy. Its utilisation (50% decode, 40% prefill) and per-layer sync delay are assumptions. It shows directions and orders of magnitude.</li>
 <li>Chip figures are rounded public numbers: H100-class 80 GB, 3.35 TB/s and about 1 PFLOP/s dense 16-bit; B200-class 180 GB, 8 TB/s and 2.25 PFLOP/s; Cerebras WSE-3 44 GB of SRAM at 21 PB/s and 125 PFLOP/s (vendor figure). At 1 byte per weight the 671B model needs at least 16 wafers and the 70B model 2. The toy sums bandwidth across chips and ignores the links between wafers, so it does not predict a real Cerebras deployment.</li>
 <li>Frontier models (claude-sonnet-5-5, gpt-6.1-sol) do not publish their shapes. Their measured decode speeds (about 136 and 37 tokens per second in the benchmark) include all the choices above, and the client cannot separate them.</li>
-<li>The benchmark data are 63 compactions on 9 slices per model. See <code>../compaction-bench/report.html</code>.</li>
+<li>The public data contain model/method means and regression coefficients. Per-run measurements and private reports stay local.</li>
 </ul>
 </main>
 <aside><div class="toc" id="toc"></div></aside>
@@ -518,7 +518,7 @@ $("p-speed").addEventListener("change", () => SPEED = +$("p-speed").value);
 
 // ---------- 8. compaction ----------
 {
-  const svg = $("svg-cw"), rows = DATA.rows, ARM = { native: C.blue, blackmagic: C.purple, summary: C.yellow, keepset: C.red };
+  const svg = $("svg-cw"), rows = DATA.groups, ARM = { native: C.blue, blackmagic: C.purple, summary: C.yellow, keepset: C.red };
   function draw() {
     const W = svg.clientWidth, H = 270, L = 50, R = 20, T = 34, B = 40;
     const xmax = Math.ceil(Math.max(...rows.map((r) => r.c_out)) / 1000) + 0.5, ymax = Math.ceil(Math.max(...rows.map((r) => r.wall_s)) / 25) * 25;
@@ -532,7 +532,7 @@ $("p-speed").addEventListener("change", () => SPEED = +$("p-speed").value);
     let lx = L + 10; for (const [a, col] of Object.entries(ARM)) { s += `<circle cx="${lx}" cy="8" r="4" fill="${col}"/><text x="${lx + 8}" y="12" font-size="11">${a === "native" ? "pi native" : a === "summary" ? "in-session summary" : a === "keepset" ? "in-session keepset" : a}</text>`; lx += a === "summary" ? 150 : a === "keepset" ? 150 : 95; }
     svg.innerHTML = s;
     const f = DATA.fit_out;
-    $("cap-cw").textContent = `${rows.length} compactions from the benchmark. Follow-up variants that retain harness instructions share their parent method's colour. Circles: claude-sonnet-5-5; triangles: gpt-6.1-sol. Fits: wall ≈ ${f.sonnet.a.toFixed(1)} s + ${f.sonnet.b.toFixed(2)} s per 1k output tokens (R² ${f.sonnet.r2.toFixed(2)}) and ${f.sol.a.toFixed(1)} s + ${f.sol.b.toFixed(2)} s per 1k (R² ${f.sol.r2.toFixed(2)}). The slope estimates an effective rate for these runs; the intercept holds TTFT and fixed overhead. Against context size before compaction, R² is ${DATA.fit_before.sonnet.r2.toFixed(2)} and ${DATA.fit_before.sol.r2.toFixed(2)}.`;
+    $("cap-cw").textContent = `${rows.length} model/method groups. Each point shows mean output tokens (rounded to 100) and mean wall time (rounded to seconds), across at least five runs. These are aggregate points, not individual compactions. Fits use the underlying local measurements. Follow-up variants that retain harness instructions share their parent method's colour. Circles: claude-sonnet-5-5; triangles: gpt-6.1-sol. Fits: wall ≈ ${f.sonnet.a.toFixed(1)} s + ${f.sonnet.b.toFixed(2)} s per 1k output tokens (R² ${f.sonnet.r2.toFixed(2)}) and ${f.sol.a.toFixed(1)} s + ${f.sol.b.toFixed(2)} s per 1k (R² ${f.sol.r2.toFixed(2)}). The slope estimates an effective rate for these runs; the intercept holds TTFT and fixed overhead. Against context size before compaction, R² is ${DATA.fit_before.sonnet.r2.toFixed(2)} and ${DATA.fit_before.sol.r2.toFixed(2)}.`;
   }
   draw(); addEventListener("resize", draw);
 
