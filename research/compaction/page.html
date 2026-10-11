@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Compaction in local agent logs</title>
+<style>
+  @font-face { font-family:"Paper Mono"; src:url(/*FONT*/) format("woff2"); font-weight:100 900; font-display:block; }
+  :root { --bg:#fbfaf7; --fg:#1d1d1b; --mute:#77756e; --line:#dedbd2; --soft:#f1efe9; --bar:#2e2e2b; --bar2:#b8574a; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#191917; --fg:#e8e6df; --mute:#95938b; --line:#3a3934; --soft:#24231f; --bar:#e8e6df; } }
+  body { margin:0; padding:24px 32px 64px; background:var(--bg); color:var(--fg); font:13px/1.55 "Paper Mono", ui-monospace, monospace; max-width:1180px; }
+  h1 { font-size:20px; margin:0 0 4px; line-height:1.3; } h2 { font-size:15px; margin:36px 0 6px; } h3 { font-size:13px; margin:18px 0 4px; }
+  .m { color:var(--mute); } p, li { max-width:920px; } .lead { font-size:13.5px; }
+  .notes { font-size:12.5px; color:var(--mute); max-width:920px; }
+  table { border-collapse:collapse; font-size:12.5px; margin:6px 0; font-variant-numeric:tabular-nums; }
+  td, th { padding:3px 9px; text-align:right; vertical-align:top; } td:first-child, th:first-child { text-align:left; }
+  th { font-weight:600; border-bottom:1px solid var(--line); } th.sp { border-bottom:none; text-align:center; color:var(--mute); font-weight:400; }
+  tr.grp td { border-top:1px solid var(--line); } td.l, th.l { text-align:left; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; vertical-align:0; }
+  .bar { display:inline-block; height:9px; background:var(--bar); vertical-align:0; margin-left:6px; } .bar.h { background:var(--bar2); margin-left:0; }
+  svg { display:block; overflow:visible; } svg text { fill:var(--fg); font-size:11px; } svg .m { fill:var(--mute); } svg .ax { stroke:var(--line); }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:28px; }
+  pre { font-size:12px; background:var(--soft); padding:10px 12px; border-radius:6px; overflow:auto; max-width:1100px; }
+  code { font-size:12px; } select { font:inherit; }
+  .scroll { max-height:520px; overflow:auto; border:1px solid var(--line); border-radius:6px; }
+  .scroll table { margin:0; } .scroll th { position:sticky; top:0; background:var(--bg); }
+  .key span.dot { margin-left:12px; } td.nw, #t-model td, #t-model th { white-space:nowrap; }
+</style>
+</head>
+<body>
+<h1 id="title"></h1>
+<div class="m" id="sub"></div>
+<p class="lead" id="abstract"></p>
+
+<h2>How each harness compacts</h2>
+<pre id="model"></pre>
+<div class="notes">Terms used below. <b>Context before</b>: the context size the harness reports when it compacts. <b>Request input</b>: the input tokens of the compaction request itself. <b>Output</b>: tokens the compaction request generated. <b>Wall time</b>: request start to compaction result. <b>Context after</b>: input tokens of the first model request after the compaction. <b>Handoff turn</b>: the extra agent turn that pi's hc-auto-compact runs before it compacts, so the agent can write durable notes. <b>Cost</b>: list price per token, applied also to subscription traffic. <b>Agent turn</b>: one user prompt (pi, Claude Code) or one Codex task.</div>
+
+<h2 id="h-share"></h2>
+<p id="p-share"></p>
+<div id="t-share"></div>
+<div class="notes" id="n-share"></div>
+
+<h2 id="h-model"></h2>
+<p id="p-model"></p>
+<div id="sc-pred"></div><div id="t-model"></div>
+<div class="notes" id="n-model"></div>
+
+<h2 id="h-wall"></h2>
+<p id="p-wall"></p>
+<div class="key m" id="key"></div>
+<div class="grid2"><div id="sc-out"></div><div id="sc-in"></div></div>
+<div id="t-fit"></div>
+<div class="notes" id="n-wall"></div>
+
+<h2 id="h-nth"></h2>
+<p id="p-nth"></p>
+<div id="t-nth"></div>
+
+<h2 id="h-cache"></h2>
+<p id="p-cache"></p>
+<div id="t-prof"></div>
+<div class="notes" id="n-prof"></div>
+
+<h2 id="h-pi"></h2>
+<p id="p-pi"></p>
+<div id="t-pi"></div>
+<div class="grid2"><div><h3>Context before and after</h3><div id="sc-ctx"></div></div><div class="notes" id="n-pi" style="padding-top:28px"></div></div>
+
+<h2>What the logs say about the research synthesis</h2>
+<div id="t-claims"></div>
+
+<h2>Limits</h2>
+<ul class="notes" id="limits"></ul>
+
+<h2>Methods and reproduction</h2>
+<div class="notes" id="methods"></div>
+<h3>Dataset</h3>
+<div class="notes">One row per compaction. <select id="filter"></select> <span id="count"></span></div>
+<div class="scroll"><table id="rows"></table></div>
+
+<script>
+const D = /*DATA*/null;
+const S = D.stats, ROWS = D.rows;
+const $ = (id) => document.getElementById(id);
+const pct = (x, d = 1) => x == null ? "–" : (x * 100).toFixed(d) + "%";
+const k = (x) => x == null ? "–" : Math.round(x / 1000) + "k";
+const n0 = (x) => x == null ? "–" : Math.round(x).toLocaleString("en-US");
+const s0 = (x) => x == null ? "–" : Math.round(x) + " s";
+const usd = (x) => x == null ? "–" : x < 0.1 ? "$" + x.toFixed(3) : "$" + x.toFixed(2);
+const G = S.groups, SH = S.shares, F = S.fits;
+const ORDER = ["pi native summary", "pi blackmagic", "codex (user thread)", "codex (sub-agent)", "codex (guardian_review)", "claude code"];
+const COLOR = { "pi native summary": "#2f6fd6", "pi blackmagic": "#6c4fc4", "codex (user thread)": "#c2408a", "codex (sub-agent)": "#e08bb5", "codex (guardian_review)": "#999999", "claude code": "#b08900" };
+const group = (r) => r.harness === "codex" ? `codex (${r.role === "user" ? "user thread" : r.role === "subagent" ? "sub-agent" : r.role})` : { "pi-native-summary": "pi native summary", "pi-blackmagic": "pi blackmagic", "cc-summary": "claude code" }[r.method];
+const dot = (g) => `<span class="dot" style="background:${COLOR[g] ?? "#777"}"></span>`;
+const day = (iso) => iso.slice(0, 10);
+
+// ---- headline numbers (all from stats.json)
+const PI = SH["pi"], CU = SH["codex (user thread)"], CS = SH["codex (sub-agent)"], CC = SH["claude code"];
+const nat = G["pi native summary"], bm = G["pi blackmagic"], cu = G["codex (user thread)"], cs = G["codex (sub-agent)"], cc = G["claude code"];
+const total = ROWS.length;
+const shares = [PI, CU, CS, CC];
+const lo = (f) => Math.min(...shares.map(f)), hi = (f) => Math.max(...shares.map(f));
+const r2out = ["pi blackmagic", "codex (user thread)", "codex (sub-agent)"].map((g) => F[g].wall_vs_input_output.r2);
+const r2in = ["pi blackmagic", "codex (user thread)", "codex (sub-agent)"].map((g) => F[g].wall_vs_input.r2);
+const sm = S.same_model;
+
+const U = S.factors.unified, V = S.factors.vendor, SOL = S.factors.sol_by_day;
+const solDays = Object.values(SOL).filter((d) => d.n >= 20).map((d) => d.tps_p50);
+$("title").textContent = "Compaction takes 2–5% of model-call cost and time. The model's decode speed and the summary's length set how long it blocks.";
+$("sub").textContent = `${total} compactions from local pi, Codex and Claude Code logs · ${S.meta.since.slice(0, 10)} to ${S.meta.until.slice(0, 10)} (${S.meta.days} days)`;
+$("abstract").innerHTML = `Coding agents compact their context when it nears the window limit. A compaction blocks the agent and costs a model request, so we measured how often it happens, what it costs, and what makes it slow.
+Across ${total} compactions in four weeks of local logs, compaction used ${pct(lo((s) => s.cost_share))}–${pct(hi((s) => s.cost_share))} of list-price model-call cost and ${pct(lo((s) => s.time_share))}–${pct(hi((s) => s.time_share))} of model-call time per harness.
+pi's hc-auto-compact handoff turn doubles pi's share to ${pct(PI.cost_share_with_handoff)} of cost and ${pct(PI.time_share_with_handoff)} of time.
+A typical compaction blocks the agent for ${s0(nat.wall_p50)} (pi native) to ${s0(cu.wall_p50)} (Codex user threads).
+A compaction is one long generation: it decodes at the model's ordinary speed, and summary length divided by that speed explains ${pct(U.r2, 0)} of the variation in wall time across ${U.n} compactions from all methods. Context size explains ${pct(U.r2_input_only, 1)}. Anthropic models compact in ${s0(V.Anthropic.wall_p50)} (p50) with ${n0(V.Anthropic.out_p50)}-token summaries; OpenAI models take ${s0(V.OpenAI.wall_p50)} with ${n0(V.OpenAI.out_p50)}-token summaries, because they decode at ${n0(V.OpenAI.tps_p50)} tok/s against ${n0(V.Anthropic.tps_p50)}.
+Prompt-cache reuse cuts cost: on Opus 5.5, an in-session Claude Code compaction costs about ${usd(sm["claude code, Opus 5.5"].cost_p50)} against ${usd(sm["pi native, Opus 5.5"].cost_p50)} for pi's native summarizer. It saves little time, ${s0(sm["claude code, Opus 5.5"].wall_p50)} against ${s0(sm["pi native, Opus 5.5"].wall_p50)}.
+To make compaction faster, decode the summary on a faster model or ask for a shorter one; reusing the cache does not help much.`;
+
+$("model").textContent =
+`pi native      separate request: new system prompt + conversation serialized as text
+               (about ${pct(nat.req_in_over_ctx_p50, 0)} of the context; tool output cut), two requests in parallel
+               (history summary + split-turn prefix). Prompt is written to cache, not read from it.
+pi blackmagic  pi -> Codex remote compaction endpoint with the whole context -> opaque checkpoint;
+               keeps recent user messages. Both pi methods usually run after an hc-auto-compact handoff turn.
+codex          in-session request on the live history (prefix read from cache) -> encrypted
+               compaction item + retained user messages. Logs exact usage per request.
+claude code    in-session summary request (live history + appended instruction). Logs context
+               before and after and duration only; request tokens are estimates.`;
+
+// ---- shares
+$("h-share").textContent = "Compaction is a small, steady overhead. Codex sub-agents compact most often.";
+$("p-share").textContent = `Codex sub-agents compact once every ${n0(1000 / CS.per_1000_calls)} model calls, pi once every ${n0(1000 / PI.per_1000_calls)}. In token terms compaction is ${pct(lo((s) => s.input_share))}–${pct(hi((s) => s.input_share))} of input but ${pct(lo((s) => s.output_share))}–${pct(hi((s) => s.output_share))} of output, because a summary is a long generation. Output is the expensive token, so the cost share sits between the two. Codex user threads have the lowest cost share: their ordinary calls cost ${usd(CU.calls_cost / CU.model_calls)} each, against ${usd(PI.calls_cost / PI.model_calls)} in pi and ${usd(CS.calls_cost / CS.model_calls)} in Codex sub-agents.`;
+const popRows = [["pi", "pi (all methods)"], ["codex (user thread)", "codex user threads"], ["codex (sub-agent)", "codex sub-agents"], ["codex (guardian_review)", "codex auto-review"], ["claude code", "claude code"]];
+const bar = (x, h) => `<span class="bar" style="width:${Math.round(x * 900)}px"></span>${h ? `<span class="bar h" style="width:${Math.round(h * 900)}px"></span>` : ""}`;
+$("t-share").innerHTML = `<table><tr><th>population</th><th>compactions</th><th>sessions with one</th><th>per 100 agent turns</th><th>model calls per compaction</th><th>share of input tokens</th><th>share of output tokens</th><th class="l">share of cost</th><th class="l">share of model-call time</th></tr>` +
+  popRows.map(([key, label]) => { const s = SH[key]; const hc = s.cost_share_with_handoff - s.cost_share, ht = s.time_share_with_handoff - s.time_share;
+    return `<tr><td>${label}</td><td>${s.compactions}</td><td>${s.sessions_with_compaction} of ${n0(s.sessions)}</td><td>${s.per_100_turns.toFixed(1)}</td><td>${n0(1000 / s.per_1000_calls)}</td><td>${pct(s.input_share)}</td><td>${pct(s.output_share)}</td>
+      <td class="l nw">${s.cost_share == null ? "unpriced" : pct(s.cost_share) + (hc > 0.0005 ? ` + ${pct(hc)}` : "")} ${s.cost_share == null ? "" : bar(s.cost_share, hc)}</td><td class="l nw">${pct(s.time_share)}${ht > 0.0005 ? ` + ${pct(ht)}` : ""} ${bar(s.time_share, ht)}</td></tr>`; }).join("") + `</table>`;
+$("n-share").innerHTML = `Shares are compaction / (compaction + ordinary model calls) for the same population and window. The second figure and the rust bar add pi's handoff turn. Model-call time sums request durations; parallel sub-agents overlap, so the time shares are shares of work, not of elapsed session time. Codex auto-review uses a model without a public price. Claude Code request tokens are estimates (see Methods). Cost: pi $${n0(PI.compaction_cost)} of $${n0(PI.calls_cost)}, Codex user threads $${n0(CU.compaction_cost)} of $${n0(CU.calls_cost)}, Codex sub-agents $${n0(CS.compaction_cost)} of $${n0(CS.calls_cost)}, Claude Code $${n0(CC.compaction_cost)} of $${n0(CC.calls_cost)}. Time: pi ${PI.compaction_wall_h.toFixed(1)} h of ${n0(PI.calls_wall_h)} h, Codex user threads ${CU.compaction_wall_h.toFixed(1)} h of ${n0(CU.calls_wall_h)} h, Codex sub-agents ${CS.compaction_wall_h.toFixed(1)} h of ${n0(CS.calls_wall_h)} h.`;
+
+// ---- the model sets compaction time
+const MT = S.factors.model;
+$("h-model").textContent = "The model sets compaction time: a compaction decodes at the model's ordinary speed";
+$("p-model").textContent = `For each model, compaction decodes at about the speed of the same model's ordinary calls with long output (table). So wall time ≈ ${U.a.toFixed(0)} s + ${U.b.toFixed(2)} × output ÷ ordinary decode speed, which fits ${U.n} compactions across Codex, pi blackmagic and pi native with R² ${U.r2.toFixed(2)}. After this, the method adds little: the median residual is ${Object.entries(U.residual_p50).map(([g, v]) => `${g} ${v > 0 ? "+" : ""}${v.toFixed(0)} s`).join(", ")}. Codex user threads run about ${U.residual_p50["codex (user thread)"].toFixed(0)} s slower than the fit. The model also sets summary length: gpt-6.1-sol and gpt-6-astra write about 5.3–5.5k tokens in Codex, gpt-6-luna and gpt-6-sol 2.3–2.9k. Together, a gpt-6.1-sol compaction blocks for ${s0(MT.find((m) => m.model === "gpt-6.1-sol" && m.harness === "codex").wall_p50)} and a gpt-6-luna one for ${s0(MT.find((m) => m.model === "gpt-6-luna" && m.harness === "codex").wall_p50)}. Provider speed also moves from day to day: Codex gpt-6.1-sol compactions decoded at ${Object.entries(SOL).map(([d, x]) => `${n0(x.tps_p50)} tok/s on ${d.slice(5)} (${x.n})`).join(", ")}.`;
+scatter($("sc-pred"), [{ diag: true, x: 360, y: 360 }, ...U ? D.stats.factors.unified_points.map(([x, y, g]) => ({ x: U.a + U.b * x, y, c: COLOR[g], r: g === "codex (sub-agent)" ? 2.3 : 3, o: 0.6, t: `${g}\npredicted ${x.toFixed(0)} s of decoding -> ${(U.a + U.b * x).toFixed(0)} s, actual ${y.toFixed(0)} s` })) : []], "predicted wall time (s)", "actual wall time (s)", { w: 560, h: 340, xmax: 360, ymax: 360 });
+$("t-model").innerHTML = `<table><tr><th>model</th><th>harness</th><th>n</th><th>output p50</th><th class="sp" colspan="2">decode tok/s p50</th><th>wall p50</th><th>cost p50</th></tr><tr><th></th><th></th><th></th><th></th><th>compaction</th><th>ordinary</th><th></th><th></th></tr>` +
+  ["Anthropic", "OpenAI"].map((v) => `<tr class="grp"><td colspan="8" class="m">${v}</td></tr>` + MT.filter((m) => m.vendor === v).map((m) => `<tr><td>${m.model}</td><td>${m.harness === "pi" ? (m.methods.length > 1 ? "pi" : m.methods[0].replace("pi-", "pi ").replace("-summary", "")) : m.harness}</td><td>${m.n}</td><td>${n0(m.out_p50)}</td><td>${n0(m.tps_p50)}</td><td>${m.ordinary_tps ? n0(m.ordinary_tps) : "–"}</td><td>${s0(m.wall_p50)}</td><td>${m.cost_p50 == null ? "–" : usd(m.cost_p50)}</td></tr>`).join("")).join("") + `</table>`;
+$("n-model").textContent = `Chart: each point is one compaction; the dashed line is a perfect prediction. Ordinary decode speed: p50 of output ÷ (wall − TTFT) over the same harness's ordinary calls with at least 1,500 output tokens in the window (agent-speed rows; at least 20 calls). Claude Code is left out of the fit because its output is estimated. Models with fewer than 5 compactions are not shown. Claude Code's Opus compactions decode slower than pi's ordinary Opus calls; its duration includes work around the request, and its output is an estimate.`;
+
+// ---- summaries grow
+const NT = S.factors.nth;
+$("h-nth").textContent = "Summaries grow with each compaction in a session, and so does the context they leave";
+$("p-nth").textContent = `Context size does not predict summary length: within each model, the rank correlation between context before and output is ${Object.entries(S.factors.out_vs_ctx_rho).map(([m, x]) => `${x.rho.toFixed(2)} (${m})`).join(", ")}. The number of earlier compactions does. Each summary must carry the previous one forward, and retained user messages accumulate. A Codex session's fourth or later compaction writes ${n0(NT.codex[4].out_p50)} tokens against ${n0(NT.codex[1].out_p50)} for its first, and leaves ${k(NT.codex[4].ctx_next_p50)} against ${k(NT.codex[1].ctx_next_p50)}. Compactions concentrate in few sessions: the busiest sessions compacted ${S.factors.per_session.slice(0, 3).join(", ")} times.`;
+$("t-nth").innerHTML = `<table><tr><th>method</th><th class="sp" colspan="4">output p50 by compaction number in the session</th><th class="sp" colspan="4">context after p50</th></tr><tr><th></th>${[1, 2, 3, "4+"].map((n) => `<th>#${n}</th>`).join("")}${[1, 2, 3, "4+"].map((n) => `<th>#${n}</th>`).join("")}</tr>` +
+  Object.entries(NT).map(([g, d]) => `<tr><td>${dot(g === "codex" ? "codex (user thread)" : g)}${g}</td>${[1, 2, 3, 4].map((n) => `<td>${d[n] ? `${n0(d[n].out_p50)} <span class="m">(${d[n].n})</span>` : "–"}</td>`).join("")}${[1, 2, 3, 4].map((n) => `<td>${d[n] ? k(d[n].ctx_next_p50) : "–"}</td>`).join("")}</tr>`).join("") + `</table>`;
+
+// ---- wall time
+$("h-wall").textContent = "Within each method, output length sets wall time and context size barely matters";
+$("p-wall").textContent = `Each method shows straight lines of wall time against output tokens, one line per model's decode speed. Against request input the points form vertical clouds: every harness compacts near a fixed context (Codex and blackmagic at p10–p90 ${k(cs.ctx_pre_p10)}–${k(bm.ctx_pre_p90)}), so input varies little and explains little. pi native spans a wider input range, ${k(F["pi native summary"].input_range_k[0] * 1000)}–${k(F["pi native summary"].input_range_k[1] * 1000)} tokens, and its wall time still does not follow input (R² ${F["pi native summary"].wall_vs_input.r2.toFixed(2)}). Its first token arrives after ${nat.ttft_p50.toFixed(1)} s (p50) although nothing is read from cache. The remaining ${s0(nat.wall_p50 - nat.ttft_p50)} is decoding.`;
+$("key").innerHTML = ORDER.filter((g) => G[g]).map((g) => `${dot(g)}${g}`).join(" ");
+
+function scatter(el, pts, xl, yl, { w = 540, h = 330, xmax, ymax } = {}) {
+  const L = 44, B = 34, T = 8, Rr = 10;
+  xmax ??= Math.max(...pts.map((p) => p.x)) * 1.05; ymax ??= Math.max(...pts.map((p) => p.y)) * 1.05;
+  const X = (x) => L + (x / xmax) * (w - L - Rr), Y = (y) => h - B - (y / ymax) * (h - B - T);
+  const ticks = (m) => { const st = Math.pow(10, Math.floor(Math.log10(m / 4))); const c = [1, 2, 5].map((f) => f * st).find((s) => m / s <= 6) ?? 10 * st; return Array.from({ length: Math.floor(m / c) + 1 }, (_, i) => i * c); };
+  let s = `<svg width="${w}" height="${h}">`;
+  for (const t of ticks(xmax)) s += `<line class="ax" x1="${X(t)}" x2="${X(t)}" y1="${T}" y2="${h - B}"/><text class="m" x="${X(t)}" y="${h - B + 14}" text-anchor="middle">${t}</text>`;
+  for (const t of ticks(ymax)) s += `<line class="ax" x1="${L}" x2="${w - Rr}" y1="${Y(t)}" y2="${Y(t)}"/><text class="m" x="${L - 6}" y="${Y(t) + 4}" text-anchor="end">${t}</text>`;
+  s += `<text class="m" x="${(L + w) / 2}" y="${h - 4}" text-anchor="middle">${xl}</text><text class="m" transform="translate(11 ${(h - B) / 2}) rotate(-90)" text-anchor="middle">${yl}</text>`;
+  for (const p of pts) s += p.diag ? `<line x1="${X(0)}" y1="${Y(0)}" x2="${X(p.x)}" y2="${Y(p.y)}" stroke="var(--mute)" stroke-dasharray="3 3"/>` :
+    `<circle cx="${X(p.x).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="${p.r ?? 3.2}" fill="${p.c}" fill-opacity="${p.o ?? 0.75}"><title>${p.t}</title></circle>`;
+  el.innerHTML = s + "</svg>";
+}
+const tip = (r) => `${group(r)} · ${r.iso} · ${r.model}\ncontext before ${n0(r.ctx_pre)} · request in ${n0(r.req_in_total)} · out ${n0(r.req_out)}\nwall ${(r.wall_ms / 1000).toFixed(1)} s · context after ${n0(r.ctx_next)}`;
+const timed = ROWS.filter((r) => r.wall_ms && r.req_in_total);
+const sty = (r) => ({ c: COLOR[group(r)], r: group(r) === "codex (sub-agent)" ? 2.4 : 3.2, o: group(r) === "codex (sub-agent)" ? 0.5 : 0.8, t: tip(r) });
+scatter($("sc-out"), timed.filter((r) => r.req_out).map((r) => ({ x: r.req_out / 1000, y: r.wall_ms / 1000, ...sty(r) })), "compaction output (k tokens)", "wall time (s)");
+scatter($("sc-in"), timed.map((r) => ({ x: r.req_in_total / 1000, y: r.wall_ms / 1000, ...sty(r) })), "compaction request input (k tokens)", "wall time (s)");
+const fitRows = ORDER.filter((g) => F[g]);
+$("t-fit").innerHTML = `<table><tr><th>method</th><th>timed</th><th class="sp" colspan="2">wall ~ input</th><th class="sp" colspan="4">wall ~ input + output</th><th class="sp" colspan="2">rank correlation with wall</th></tr>
+<tr><th></th><th></th><th>s per 1k in</th><th>R²</th><th>fixed s</th><th>s per 1k in</th><th>s per 1k out</th><th>R²</th><th>input</th><th>output</th></tr>` +
+  fitRows.map((g) => { const f = F[g]; return `<tr><td>${dot(g)}${g}</td><td>${f.n}</td><td>${f.wall_vs_input.s_per_1k_in.toFixed(2)}</td><td>${f.wall_vs_input.r2.toFixed(2)}</td><td>${f.wall_vs_input_output.intercept_s.toFixed(0)}</td><td>${f.wall_vs_input_output.s_per_1k_in.toFixed(2)}</td><td>${f.wall_vs_input_output.s_per_1k_out.toFixed(1)}</td><td>${f.wall_vs_input_output.r2.toFixed(2)}</td><td>${f.spearman_input.toFixed(2)}</td><td>${f.spearman_output.toFixed(2)}</td></tr>`; }).join("") + `</table>`;
+$("n-wall").textContent = `Least-squares fits per method. "s per 1k out" is the inverse decode speed: ${F["pi blackmagic"].wall_vs_input_output.s_per_1k_out.toFixed(0)} s per 1k output tokens is about ${n0(1000 / F["pi blackmagic"].wall_vs_input_output.s_per_1k_out)} tok/s. One method mixes models with different speeds, which leaves part of the variance unexplained. pi native runs two requests in parallel, so its wall time follows the longer one and its summed output fits poorly. Claude Code output is estimated from summary length, so its output fit is partly built in; with ${F["claude code"].n} rows it is a sketch.`;
+
+// ---- cost vs cache
+$("h-cache").textContent = "Reusing the cached history cuts compaction cost, not compaction time.";
+const ccO = sm["claude code, Opus 5.5"], piO = sm["pi native, Opus 5.5"];
+$("p-cache").textContent = `Codex reads ${pct(cu.req_cache_read_share_p50)} of a compaction request's input from cache (p50, user threads). pi's native summarizer reads ${pct(nat.req_cache_read_share_p50)}: it sends a new prompt and writes ${pct(nat.req_cache_write_share_p50)} of it to cache at 1.25× the input price. On Opus 5.5, Claude Code's in-session compaction costs ${usd(ccO.cost_p50)} at ${k(ccO.ctx_pre_p50)} context (${ccO.n} compactions, estimated), against ${usd(piO.cost_p50)} at ${k(piO.ctx_pre_p50)} for pi native (${piO.n}). Wall times are close, ${s0(ccO.wall_p50)} against ${s0(piO.wall_p50)}, and the gap follows output length (${n0(ccO.out_p50)} against ${n0(piO.out_p50)} tokens).`;
+$("t-prof").innerHTML = `<table><tr><th>method</th><th>n</th><th>context before p50</th><th>request input p50</th><th>read from cache p50</th><th>output p50</th><th>wall p50</th><th>wall p90</th><th>output tok/s p50</th><th>cost p50</th><th>context after p50</th><th>after / before</th></tr>` +
+  ORDER.filter((g) => G[g]).map((g) => { const x = G[g]; return `<tr><td>${dot(g)}${g}</td><td>${x.n}</td><td>${k(x.ctx_pre_p50)}</td><td>${k(x.req_in_p50)}</td><td>${x.req_cache_read_share_p50 == null ? "not logged" : pct(x.req_cache_read_share_p50, 0)}</td><td>${n0(x.out_p50)}</td><td>${s0(x.wall_p50)}</td><td>${s0(x.wall_p90)}</td><td>${n0(x.out_tps_p50)}</td><td>${x.cost_p50 == null ? "unpriced" : usd(x.cost_p50)}</td><td>${k(x.ctx_next_p50)}</td><td>${pct(x.ctx_next_over_pre_p50, 0)}</td></tr>`; }).join("") + `</table>`;
+$("n-prof").textContent = `Output tok/s = output / (wall − TTFT) where TTFT is known (pi native, from the Magpie ledger), else output / wall. Blackmagic does not keep its cache split, so its cost p50 is the midpoint between all-cached and none-cached; its total is $${bm.cost_lo_sum.toFixed(0)}–$${bm.cost_hi_sum.toFixed(0)}. Claude Code's cache state is inferred from the gap since the previous call (cached when under 1 hour). Context after excludes compactions that did not apply (next section).`;
+
+// ---- pi methods
+$("h-pi").textContent = "In pi, blackmagic leaves a 4× smaller context than native. Its longer wait comes from slower GPT decoding.";
+$("p-pi").textContent = `Blackmagic leaves ${k(bm.ctx_next_p50)} tokens for the next request, native ${k(nat.ctx_next_p50)} (p50): native keeps a raw 20k-token tail plus its summary, blackmagic keeps recent user messages and an opaque checkpoint. Blackmagic blocks for ${s0(bm.wall_p50)} against ${s0(nat.wall_p50)}, and its handoff turn adds ${s0(bm.handoff_wall_p50)} against ${s0(nat.handoff_wall_p50)}. The methods ran on different models: GPT models for blackmagic, mostly Opus 5.5 for native. After the model's decode speed and the output length, the method explains almost nothing (median residual ${U.residual_p50["pi blackmagic"].toFixed(0)} s blackmagic, +${U.residual_p50["pi native summary"].toFixed(0)} s native). The price gap is a model gap too. The handoff turn re-reads the full context about twice (${k(bm.handoff_in_p50)} input tokens, p50); in ${nat.handoff_cold} of ${nat.handoff_n} native and ${bm.handoff_cold} of ${bm.handoff_n} blackmagic handoffs less than half of that came from cache. ${bm.not_applied} of ${bm.n} blackmagic compactions, all between ${bm.not_applied_days[0]} and ${bm.not_applied_days.at(-1)}, did not shrink the context: every later request still read about 250k tokens from cache, so the session paid for a compaction that did nothing. None of the ${ROWS.filter((r) => r.method === "pi-blackmagic" && r.iso > "2026-09-22").length} blackmagic compactions after ${bm.not_applied_days.at(-1)} failed this way.`;
+const piRow = (lab, f) => `<tr><td>${lab}</td><td>${f(nat)}</td><td>${f(bm)}</td></tr>`;
+$("t-pi").innerHTML = `<table><tr><th></th><th>${dot("pi native summary")}native</th><th>${dot("pi blackmagic")}blackmagic</th></tr>` +
+  piRow("compactions", (x) => x.n) + piRow("models", (x) => x.models.join(", ")) + piRow("after an hc-auto-compact handoff", (x) => `${x.handoff_n} of ${x.n}`) +
+  piRow("context before p50", (x) => k(x.ctx_pre_p50)) + piRow("request input / context p50", (x) => pct(x.req_in_over_ctx_p50, 0)) + piRow("output p50", (x) => n0(x.out_p50)) +
+  piRow("compaction wall p50", (x) => s0(x.wall_p50)) + piRow("handoff turn wall p50", (x) => s0(x.handoff_wall_p50)) +
+  piRow("compaction cost p50", (x) => usd(x.cost_p50)) + piRow("handoff turn cost p50", (x) => usd(x.handoff_cost_p50)) +
+  piRow("context after p50", (x) => k(x.ctx_next_p50)) + piRow("did not shrink the context", (x) => `${x.not_applied} of ${x.n}`) + `</table>`;
+const ctxPts = ROWS.filter((r) => r.ctx_pre && r.ctx_next).map((r) => ({ x: r.ctx_pre / 1000, y: r.ctx_next / 1000, c: COLOR[group(r)], r: 2.6, o: 0.7, t: tip(r) }));
+scatter($("sc-ctx"), [{ diag: true, x: 300, y: 300 }, ...ctxPts], "context before (k tokens)", "context after (k tokens)", { w: 520, h: 300, xmax: 520, ymax: 300 });
+$("n-pi").innerHTML = `Each point is one compaction; the dashed line marks no change. The cluster near 250k after compaction is the blackmagic compactions that did not apply. A replay fix in blackmagic ("Fix serializer-drift replay reconstruction") landed on 2026-09-21; the logs do not record which version ran, so that cause is likely but not shown.<br><br>Native requests carry ${pct(nat.req_in_over_ctx_p50, 0)} of the context because pi serializes the conversation to text and cuts long tool output. Blackmagic sends the whole context.`;
+
+// ---- claims
+const claims = [
+  ["Pi's native summarizer gets 0% from cache.", `Confirmed and stronger: it reads ${pct(nat.req_cache_read_share_p50)} and writes ${pct(nat.req_cache_write_share_p50)} of its prompt to cache, billed at 1.25× input.`],
+  ["Native compaction would cost $0.65–1.45 at 150–350k context.", `Lower: p50 ${usd(nat.cost_p50)} at ${k(nat.ctx_pre_p50)} context. The summarizer sends ${pct(nat.req_in_over_ctx_p50, 0)} of the context, not all of it.`],
+  ["A cache-reusing compaction saves about 4–8 s of waiting.", `Not the main lever. Uncached native TTFT is ${nat.ttft_p50.toFixed(1)} s (p50) and decoding takes the other ${s0(nat.wall_p50 - nat.ttft_p50)}. Codex reads ${pct(cu.req_cache_read_share_p50)} from cache and still takes ${s0(cu.wall_p50)}.`],
+  ["Codex builds the compaction request as the live history plus an instruction.", `Consistent: ${pct(cu.req_cache_read_share_p50)} of request input is read from cache, and request input equals the context before.`],
+  ["Compaction cost is dominated by reading the old history, not by writing the new prefix.", `Partly. With cache reuse, output dominates: a Codex compaction's ${n0(cu.out_p50)} output tokens cost more than its ${k(cu.req_in_p50)} cached input on gpt-6.1-sol. Without reuse (pi native), input dominates.`],
+  ["Experiments ran at 37–45k context; projections to 150–350k.", `Real compactions here fire at ${k(Math.min(...Object.values(G).map((x) => x.ctx_pre_p10)))}–${k(Math.max(...Object.values(G).map((x) => x.ctx_pre_p90)))} (lowest p10 to highest p90 across methods), so the projected range matches practice.`],
+];
+$("t-claims").innerHTML = `<table><tr><th class="l">claim in the synthesis</th><th class="l">local logs</th></tr>` + claims.map(([a, b]) => `<tr class="grp"><td class="l" style="max-width:420px">${a}</td><td class="l" style="max-width:640px">${b}</td></tr>`).join("") + `</table>`;
+
+// ---- limits
+$("limits").innerHTML = [
+  `Claude Code has ${cc.n} compactions in ${cc.sessions} sessions. Its logs keep no usage for the summary request, so its tokens and cost are estimates (output = summary characters / 3.6).`,
+  `Cost uses list prices for every call, including subscription traffic that is not billed per token. Codex auto-review uses a model with no public price; its cost is left out.`,
+  `Codex start times come from the last log line written before the compaction. One sub-agent wall time (8 hours of waiting) was dropped by a rule: implied output under 5 tok/s.`,
+  `The trigger of a pi compaction outside hc-auto-compact (threshold or manual /compact) is not logged. The Codex trigger split (turn start or mid-turn) is a heuristic.`,
+  `pi blackmagic does not keep its cache split; its cost is a range.`,
+  `Methods ran on different models. Comparisons between methods mix method and model effects; the Opus 5.5 comparison of pi native and Claude Code is the only same-model one.`,
+].map((x) => `<li>${x}</li>`).join("");
+
+// ---- methods
+const dr = Object.entries(S.dropped).map(([a, b]) => `${a}: ${b}`).join("; ");
+$("methods").innerHTML = `<p>Window: compactions and calls with a timestamp from ${S.meta.since.slice(0, 16)}Z to ${S.meta.until.slice(0, 16)}Z.</p>
+<table><tr><th class="l">harness</th><th class="l">compaction record</th><th class="l">request tokens</th><th class="l">wall time</th><th class="l">context after</th></tr>
+<tr class="grp"><td class="l">pi native</td><td class="l"><code>compaction</code> entry with a summary, in <code>~/.pi/agent/sessions</code></td><td class="l">entry <code>usage</code> (cache writes folded into input); split from the Magpie ledger when matched (${nat.n - 4} of ${nat.n})</td><td class="l">Magpie ledger: first request start to last request end, 1–2 records whose output sums to the entry's; else the gap to the previous entry (≤ 10 min)</td><td class="l" rowspan="2">first assistant request under the compaction in the session tree that started after it</td></tr>
+<tr><td class="l">pi blackmagic</td><td class="l"><code>compaction</code> entry, <code>details.state = remote_applied</code></td><td class="l"><code>details.usage</code> (input, output; no cache split)</td><td class="l"><code>details.latencyMs</code></td></tr>
+<tr class="grp"><td class="l">Codex</td><td class="l"><code>compacted</code> item in rollouts</td><td class="l"><code>token_usage_record</code> with <code>response_id = compaction_response_id</code></td><td class="l">that record's time − last synchronous line before it</td><td class="l">next ordinary <code>token_usage_record</code></td></tr>
+<tr class="grp"><td class="l">Claude Code</td><td class="l"><code>compact_boundary</code> system entry</td><td class="l">estimated: input = preTokens, output = summary chars / 3.6</td><td class="l"><code>compactMetadata.durationMs</code></td><td class="l">next assistant usage</td></tr></table>
+<p>Ordinary calls (denominators): pi assistant messages, deduplicated by response id, wall = entry time − request start; Codex <code>token_usage_record</code>s deduplicated by response id, wall from agent-speed's Codex adapter; Claude Code assistant messages deduplicated by message id, wall = last chunk − previous user entry. pi logs cache writes through Magpie as input, so those tokens are priced at the input rate (20% below the write rate). Exclusions: ${dr}. Magpie's Claude subscription bridge drives Claude Code as transport for other agents; its transcript directories (<code>magpie-c*</code>) are not Claude Code sessions. Forked Codex threads replay their parent's compactions before their own first call; these copies are dropped. The evaluation copy of pi sessions duplicates main sessions and adds nothing after deduplication.</p>
+<p>Reproduce: <code>cd research/compaction && python3 -I build.py 28 && uv run --with matplotlib --with numpy python -I analyze.py</code>. Outputs: <code>compactions.jsonl</code> (rows), <code>totals.json</code> (denominators and exclusions), <code>stats.json</code>, this page.</p>`;
+
+// ---- dataset table
+const COLS = [["iso", "time (UTC)"], ["g", "method"], ["model", "model"], ["trigger", "trigger"], ["ctx_pre", "context before"], ["req_in_total", "request in"], ["req_cache_read", "cache read"], ["req_out", "out"], ["wall_ms", "wall s"], ["cost", "cost"], ["ctx_next", "context after"], ["handoff_calls", "handoff calls"], ["tokens_source", "tokens from"]];
+const fmt = (c, r) => c === "wall_ms" ? (r.wall_ms == null ? "–" : (r.wall_ms / 1000).toFixed(1)) : c === "cost" ? (r.cost != null ? usd(r.cost) : r.cost_lo != null ? `${usd(r.cost_lo)}–${usd(r.cost_hi)}` : "–") : c === "g" ? dot(group(r)) + group(r) : typeof r[c] === "number" ? n0(r[c]) : (r[c] ?? "–");
+$("filter").innerHTML = `<option value="">all methods</option>` + ORDER.filter((g) => G[g]).map((g) => `<option>${g}</option>`).join("");
+function rows() {
+  const f = $("filter").value, rs = ROWS.filter((r) => !f || group(r) === f);
+  $("count").textContent = `${rs.length} rows`;
+  $("rows").innerHTML = `<tr>${COLS.map(([, l]) => `<th>${l}</th>`).join("")}</tr>` + rs.map((r) => `<tr>${COLS.map(([c]) => `<td>${fmt(c, r)}</td>`).join("")}</tr>`).join("");
+}
+$("filter").onchange = rows;
+rows();
+</script>
+</body>
+</html>
