@@ -1,77 +1,153 @@
 # trace-analytics
 
-Status: review-pending convention proposed from the operator's scope and privacy decisions.
+Status: review-pending wording of the operator's agreed contract.
 Stage: exploration for studies; consolidation for the shared pipeline; sharing for public artifacts.
 
-## Purpose and scope
+## Purpose and objectives
 
-Explain coding-agent latency, throughput, cache behavior, compaction, and cost.
-Keep a reusable methodology and a complete input → analytics → report pipeline.
-Use inference physics to explain measurements and their limits.
+Turn local coding-agent traces into evidence about latency, throughput, cache
+behavior, compaction, cost, and the user's experienced wait. Own the reusable
+methodology, framework, and complete input → analytics → report pipeline.
 
-- `src/sources/` owns harness log knowledge and normalization. Unavailable facts stay null.
-- `src/record.mjs` owns the small shared record contract.
-- `src/analytics/` owns questions, treatments, derivations, and findings.
-- `src/reports/` owns presentation. Reports render findings; they do not invent them.
-- `research/<study>/` owns experiment source: hypotheses, plans, prompts, controls,
-  judging criteria, orchestration, and reproduction instructions.
+The analytical questions govern development:
 
-Read sources without changing them. Keep account operations, trading, agent
-runtime management, and private transcript archives outside this project's scope.
-Ask the operator before moving these responsibility boundaries.
+| Question | Intended decision |
+|---|---|
+| How does TTFT vary with context? | Investigate prefill and other pre-generation delays. |
+| How fast does output decode? | Compare generation rates where telemetry can identify them. |
+| What determines end-to-end throughput and stalls? | Explain the user's wait. |
+| How much time and cost does compaction add? | Compare compaction methods and summary tradeoffs. |
+| How do idle gaps and cache reuse interact? | Compare TTL policies. |
+| How does prefix placement affect reuse? | Investigate cache layout choices. |
+| How much time goes to tools versus model calls? | Identify bottlenecks as generation gets faster. |
 
-## Public source and private results
+These are directions, not a claim that every study is implemented. The current
+study inventory and usage live in `README.md`. Extend analytics through shared
+normalized inputs instead of building a separate parser for each question.
 
-Git is the public source bundle. Version code, methodology, configuration schemas,
-synthetic fixtures, and instructions required to reproduce a study.
+Use inference physics to explain one layer below client measurements. Keep the
+public explainer useful to readers making productivity decisions. Label toy
+hardware assumptions; do not infer private serving internals from client timings.
 
-`results/<study>/<condition>/` is the operator's local artifact home. The whole
-`results/` tree is ignored. Put final machine-readable results, rendered reports,
-private configuration, and necessary experiment evidence there. Use an explicit
-condition name for controls, ablations, parameter changes, and accepted baselines.
-Original harness logs remain in their owning stores; retain pointers locally.
+## Layer contract
 
-Each persisted result needs its input or source pointer, parameters, code version,
-environment assumptions, interpretation, and verification anchor. Mark unknown
-provenance as unknown. Keep provenance with the result; do not invent a separate
-registry. A report must retain its machine-readable backend or a working pointer.
+```
+harness logs → sources → normalized records → analytics → findings → reports
+                                  pipeline wires the studies
+```
 
-Public results require operator review. Publish only approved aggregates or
-synthetic examples. Numeric-only rows are not anonymization. Per-trace/per-run
-rows, identifiers, timestamps, private paths, project associations, prompts,
-answers, and judge notes remain private, including inside HTML and fixtures.
-Check small groups for disclosure before publishing aggregates.
+- **Sources** own knowledge of harness formats, semantics, availability, lineage,
+  and duplicate records. `src/sources/` reads logs and normalizes observations.
+  Unlogged facts stay null. Preserve missingness instead of inventing measurements.
+- **Records** are the small contract in `src/record.mjs`. Add a concept only when
+  an analytical question needs it. Give equivalent facts equivalent semantics
+  across adapters; preserve distinctions that affect interpretation.
+- **Analytics** own intentions, populations, transformations, estimates, and
+  findings. `src/analytics/` consumes normalized records, never harness files.
+  Keep estimates distinguishable from observations and expose their assumptions.
+- **Reports** own mental models, visual language, and audience-fit explanation.
+  `src/reports/` renders analytical results, never raw logs. An interactive report
+  may call shared analytics; it must not maintain a second set of formulas.
+- **Wiring** belongs in `src/pipeline.mjs` and the entry points. Keep study logic
+  inside its owning layer so the three layers can evolve independently.
+- **Experiments** belong in `research/<study>/`: plans, orchestration, prompts,
+  controls, judging criteria, and reproduction instructions. Move reusable
+  harness parsing into sources; keep experiment-specific treatments in research.
 
-Review staged content and full reachable history before publication. Inspect
-embedded report data as well as source files. A privacy scanner cannot establish
-this semantic boundary. `.gitignore` does not remove tracked files or past commits.
-Use only the approved public Git identity. Ask before rewriting published history.
+Read original logs without changing them. The repo does not own harness runtime
+implementations, model serving, account operations, or the original log archive.
+Controlled experiments may use local copies and authorized model calls. Ask before
+broadening scope, moving a responsibility boundary, or incurring unapproved costs.
 
-## Retention and cleanup
+## Evidence and interpretation
 
-Classify each artifact before deleting it:
+Before a new study or experiment, state the question, hypotheses, comparison
+conditions, evaluator, and source-to-result flow in its source bundle. Read the
+study's instructions before running it. Ordinary report refreshes reuse that plan.
 
-- Source: version the generative bundle, including natural-language instructions.
-- Final result: keep one canonical generation for each distinct condition.
-- Candidate: temporarily retain one useful predecessor until verification completes.
-- Retry or intermediate: delete after promotion if it adds no distinct evidence.
+For each result, state the window and time zone, included population, coverage,
+exclusions, and missing telemetry. Keep source/harness, route/model, and measured
+phase distinctions visible where they affect comparisons. Explain deduplication
+and lineage assumptions through the owning source and analysis code.
 
-Keep distinct controls, judge-agreement passes, treatments, and declared baselines.
-Retain costly or irreproducible model outputs needed to investigate findings.
-Never discard original evidence merely because a summary exists. Preserve a failed
-attempt only if the failure is useful evidence. Record uncertain classifications
-locally and resolve them before deletion.
+Separate observed usage, estimated usage, modeled API-price cost, and actual
+billed spend. A cache-policy simulation is a counterfactual. TTFT is not an
+isolated prefill measurement; stalls do not establish a unique cause. Support
+causal claims with evidence beyond correlation, or mark them provisional.
 
-Use `/tmp` only for disposable execution work. Promote needed results into
-`results/` before closing a task. Keep privacy-recovery backups until publication
-repair is verified. Ignored files need a separate private backup; Git is not one.
+Reports must fit their selected window and population. Handle absent groups and
+zero events without borrowing findings or dates from another run. Mark snapshots
+and live views distinctly. Preserve comparison windows when showing studies
+side by side, and disclose differences in coverage.
 
-## Change and verification
+## Artifact placement and retention
 
-Check the base revision and pending edits before changing shared files. Keep
-unrelated work separate. Choose checks for the changed failure modes; avoid paid
-benchmark reruns for path or documentation changes. Verify moved files before
-removing duplicates. Update reproduction commands when artifact paths change.
+| Home | Contents and authority |
+|---|---|
+| Tracked source | Reusable code, methods, plans, prompts, schemas, synthetic fixtures, evaluation criteria, and reproduction instructions. |
+| `results/<study>/<condition>/` | Ignored local results, private configuration, necessary input slices, experiment evidence, and reports. |
+| Original source stores | Authoritative harness logs. Keep local pointers; avoid unnecessary copies. |
 
-Treat new governance and research conclusions as proposals until the operator
-ratifies them. Keep active limitations beside the relevant study instructions.
+A condition identifies a meaningful comparison, including input window when
+relevant. Keep one canonical result per condition. A persisted result carries
+its data or pointer, parameters, code version, environment assumptions,
+interpretation, and verification anchor. Record unknown provenance as unknown.
+Keep this with the result rather than creating a separate bookkeeping system.
+A rendered report retains its machine-readable backend or a working pointer.
+
+Apply promotion and cleanup together:
+
+1. Classify outputs as distinct conditions, candidates, retries, or intermediates.
+2. While verification is unresolved, retain at most one useful predecessor.
+3. Promote the verified candidate and remove superseded retries and intermediates.
+
+Retain controls, ablations, judge-agreement passes, and declared baselines. Keep
+costly or irreproducible evidence needed to investigate findings. A summary does
+not replace original evidence. Keep a failed attempt only when its failure adds
+useful evidence. Resolve uncertain classifications before deletion.
+
+Use `/tmp` for disposable work only. Promote needed artifacts into `results/`.
+Verify moved files before removing their old copies. Ignored results require a
+separate private backup; Git does not protect them.
+
+## Public boundary
+
+The repository and GitHub Pages are public. Local results remain private.
+Version sanitized source bundles; keep private source coordinates in ignored
+configuration. Tests use synthetic identities and content.
+
+Publish only operator-approved aggregates or synthetic examples. Per-trace and
+per-run rows remain private even when they contain only numbers or pseudonyms.
+Exclude personal identifiers, session UUIDs, source timestamps, private paths,
+project associations, prompts, answers, and judge notes from tracked artifacts.
+Inspect embedded HTML/JavaScript data, fixtures, screenshots, and Git metadata.
+Review small groups and combinations of aggregates for disclosure. A minimum
+sample count or an allowlisted schema does not prove anonymity.
+
+Pages must build from reviewed public inputs without reading local results.
+Serve private reports on loopback. Public previews, uploads, and wider network
+access require explicit authorization.
+
+Before publishing, review staged content and reachable history semantically and
+run the installed privacy checks. Use only the approved public Git identity.
+Neither a clean scan nor `.gitignore` proves that private data is absent.
+
+For an authorized history repair, record the audited cutoff, keep a private
+recovery copy, sanitize only that history, and preserve later work. Use
+compare-and-swap locally and a force-with-lease remotely. Audit the replacement
+before publication. Check old deployment artifacts and retained host references;
+a force-push does not erase caches or external clones. Keep audit receipts outside
+the public repo and retain recovery evidence until cleanup is resolved.
+
+## Change discipline
+
+Inspect the base revision and pending edits before changing shared files. Keep
+unrelated work separate. Escalate changes to this governing contract for operator
+review; optimize implementation freely inside it. Agent-written governance and
+new conclusions remain proposals until ratified.
+
+Choose verification for the changed failure modes. Reuse unchanged evidence;
+avoid paid reruns for path or documentation edits. Verify analytics and their
+rendered views separately. Update reproduction instructions when paths change.
+Record active limitations beside the study they affect. Report completed work,
+verification, and unresolved blockers without claiming more than the evidence.
