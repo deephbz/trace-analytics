@@ -14,12 +14,10 @@ import { spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { homedir } from "node:os";
-
 const HERE = dirname(fileURLToPath(import.meta.url));
-const HC = join(homedir(), "repos/extension-host");
-const KEEPSET = join(HC, ".worktrees/keepset-bench/experiments/keepset-compaction/src/extension.mjs");
-const BLACKMAGIC = join(HC, "packages/pi-openai-blackmagic-compact/src/extension.mjs");
+// Supply absolute extension paths for the selected experimental arms.
+const KEEPSET = process.env.BENCH_KEEPSET_EXTENSION;
+const BLACKMAGIC = process.env.BENCH_BLACKMAGIC_EXTENSION;
 
 export const MODELS = {
   sonnet: { provider: "magpie", id: "claude/claude-sonnet-5-5" },
@@ -31,6 +29,9 @@ export const ARMS = {
   blackmagic: { ext: [BLACKMAGIC], trigger: "compact", only: "sol" },
   summary: { ext: [KEEPSET], trigger: "keepset", env: { KEEPSET_MODE: "summary" } },
   keepset: { ext: [KEEPSET], trigger: "keepset", env: { KEEPSET_MODE: "keepset" } },
+  // Same methods with harness-delivered messages kept in the verbatim record (KEEPSET_RAREBIT_CUSTOM).
+  summaryc: { ext: [KEEPSET], trigger: "keepset", env: { KEEPSET_MODE: "summary", KEEPSET_RAREBIT_CUSTOM: "1" } },
+  keepsetc: { ext: [KEEPSET], trigger: "keepset", env: { KEEPSET_MODE: "keepset", KEEPSET_RAREBIT_CUSTOM: "1" } },
 };
 const WARMUP = "[Benchmark checkpoint] Do not call any tools. In two sentences, state the task you are working on and where it stands.";
 const PROBE = [
@@ -48,7 +49,7 @@ function args() {
   return o;
 }
 
-class Rpc {
+export class Rpc {
   constructor(cmd, argv, opts, log) {
     this.p = spawn(cmd, argv, { ...opts, stdio: ["pipe", "pipe", "pipe"] });
     this.waiters = [];
@@ -96,7 +97,7 @@ class Rpc {
   }
 }
 
-async function turn(rpc, message, ms) {
+export async function turn(rpc, message, ms) {
   const settled = rpc.wait((e) => e.type === "agent_settled", ms);
   const { t } = await rpc.send({ type: "prompt", message });
   return { t0: t, t1: (await settled).t };
@@ -105,6 +106,9 @@ async function turn(rpc, message, ms) {
 export async function run(slice, modelKey, armKey) {
   // slice: <session>-<model>-<tier>k (slices are sized per model)
   const model = MODELS[modelKey], arm = ARMS[armKey];
+  if (arm.ext.some((p) => !p || !existsSync(p))) {
+    throw new Error("Selected arm needs an existing BENCH_KEEPSET_EXTENSION or BENCH_BLACKMAGIC_EXTENSION path");
+  }
   const id = `${slice}__${modelKey}__${armKey}`;
   const dir = join(HERE, "runs", id);
   if (existsSync(join(dir, "meta.json")) && JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")).ok) return { id, skipped: true };

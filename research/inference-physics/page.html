@@ -1,0 +1,592 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why an agent waits: the physics of LLM speed, from one token to compaction</title>
+<style>
+  @font-face { font-family:"Paper Mono"; src:/*FONT*/ format("woff2"); font-weight:100 900; }
+  :root { color-scheme:light; --bg:#f7f7f4; --fg:#26251f; --mute:#77756c; --line:#dcdad3; --box:#e6e5e0; --soft:#efeee9;
+    --blue:#5d9bd8; --green:#7fb069; --red:#e0685a; --purple:#a98be0; --yellow:#e2bd3f; --teal:#4fb8aa; --orange:#e98a52; --gray:#9a988f; }
+  * { box-sizing:border-box; }
+  html { scroll-behavior:smooth; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.65 "Paper Mono", ui-monospace, Menlo, monospace; }
+  .wrap { display:grid; grid-template-columns:minmax(0,760px) 250px; gap:56px; max-width:1100px; margin:0 auto; padding:56px 24px 160px; }
+  main > p, main li { max-width:72ch; }
+  h1 { font-size:30px; line-height:1.25; margin:0 0 10px; letter-spacing:-0.01em; }
+  h2 { font-size:19px; line-height:1.35; margin:72px 0 14px; }
+  h2 .n { color:var(--mute); font-weight:400; margin-right:10px; }
+  .by { color:var(--mute); font-size:13px; margin-bottom:28px; }
+  code, .k { background:var(--soft); padding:1px 5px; border-radius:3px; font-size:13px; }
+  .hl { padding:1px 5px; border-radius:3px; white-space:nowrap; }
+  .hl.blue { background:#dbe8f6; } .hl.green { background:#e1efd8; } .hl.red { background:#f8dcd7; } .hl.purple { background:#ebe2f9; }
+  .hl.yellow { background:#f6ecc6; } .hl.teal { background:#d5efeb; } .hl.orange { background:#f9e0d0; }
+  .fig { margin:22px 0 8px; background:var(--soft); border:1px solid var(--line); border-radius:6px; padding:14px 14px 10px; }
+  .fig canvas, .fig svg { display:block; width:100%; }
+  .cap { color:var(--mute); font-size:12.5px; line-height:1.55; margin:6px 0 22px; max-width:76ch; }
+  .ctl { display:flex; flex-wrap:wrap; gap:8px 18px; align-items:center; font-size:12.5px; margin:8px 0 2px; }
+  .ctl label { display:flex; gap:8px; align-items:center; }
+  .ctl input[type=range] { width:150px; accent-color:var(--fg); }
+  .readout { font-size:13px; margin-top:8px; line-height:1.7; }
+  .readout b { font-weight:600; }
+  button, select { font:inherit; font-size:12.5px; background:var(--bg); color:var(--fg); border:1px solid #c9c7bf; border-radius:4px; padding:3px 9px; cursor:pointer; }
+  button:hover { background:#fff; }
+  button.on { background:var(--fg); color:var(--bg); }
+  pre { background:var(--soft); border:1px solid var(--line); border-radius:6px; padding:12px 14px; font-size:12.5px; line-height:1.55; overflow-x:auto; }
+  table { border-collapse:collapse; font-size:12.5px; margin:16px 0 6px; width:100%; }
+  th { text-align:left; font-weight:600; border-bottom:1px solid var(--line); padding:6px 8px; vertical-align:bottom; }
+  td { border-bottom:1px solid var(--line); padding:6px 8px; vertical-align:top; }
+  .tag { font-size:11px; padding:0 6px; border-radius:3px; white-space:nowrap; }
+  .tag.m { background:#e1efd8; } .tag.s { background:#dbe8f6; } .tag.p { background:#f6ecc6; }
+  aside { position:sticky; top:40px; align-self:start; font-size:12.5px; }
+  aside .toc a { display:block; color:var(--fg); text-decoration:none; padding:3px 0; }
+  aside .toc a::before { content:"∗ "; color:var(--mute); }
+  aside .toc a.cur { font-weight:700; }
+  #panel { position:fixed; right:20px; bottom:20px; width:250px; background:#fff; border:1px solid #c9c7bf; border-radius:6px; padding:12px 14px; font-size:12px; box-shadow:0 2px 10px rgba(0,0,0,.06); z-index:5; }
+  #panel h4 { margin:0 0 8px; font-size:12px; }
+  #panel .row { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:5px 0; }
+  #panel select { width:150px; }
+  #panel .sum { color:var(--mute); margin-top:8px; line-height:1.5; }
+  @media (max-width:1000px) { .wrap { grid-template-columns:1fr; } aside { display:none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<main>
+<h1>Why an agent waits: the physics of LLM speed, from one token to compaction</h1>
+<div class="by">An interactive primer for readers who know physics and computer science but not LLM internals · agent-speed research · <span id="date"></span></div>
+
+<p>A coding agent spends much of its time waiting for a model. The wait has a structure. Kernels, chips and model shapes differ a lot, but they all fit one small set of physical limits: how fast a chip can move bytes, and how fast it can multiply numbers. This page builds that picture step by step. Each step adds one idea and one demo.</p>
+<p>The demos run on a toy machine. Use the <b>machine panel</b> in the corner to choose a chip, how many chips serve one copy of the model, and a model shape. The chip figures come from public spec sheets and are rounded. The model shapes are public open-weight designs; the frontier models behind your subscriptions keep their shapes private. Trust the shapes of the curves more than the absolute numbers.</p>
+
+<h2 id="s1"><span class="n">1</span>A language model writes one token per pass</h2>
+<p>A <span class="hl blue">token</span> is a piece of text, on average about ¾ of an English word. The model is a fixed function. It reads the whole context and returns a probability for every possible next token. The server picks one token, appends it to the context, and calls the function again. Text comes out one token per pass, because each pass needs the token before it.</p>
+<p>Physicists can read this as an iterated map: <code>x(t+1) = f(x(0..t))</code>. Ordinary decoding confirms one token per pass, because step <i>t+1</i> needs the token from step <i>t</i>. <i>Speculative decoding</i> guesses several tokens cheaply and checks them in one pass, so it can confirm several tokens per pass; its gain depends on how often the guesses are right. The chain stays serial. This is the first law of agent speed.</p>
+<div class="fig"><canvas id="c-loop"></canvas></div>
+<div class="cap">Grey tiles are the prompt. Each pass reads the context and emits one coloured tile, which joins the context for the next pass.</div>
+
+<h2 id="s2"><span class="n">2</span>Each pass reads every active weight from memory, and memory is the slow part</h2>
+<p>The function <code>f</code> is mostly matrix multiplication. Its matrices hold the <span class="hl purple">weights</span>: tens to hundreds of billions of numbers. For one pass that produces one token, the chip must stream every weight that the pass uses from memory into its compute units. Each weight then takes part in about two arithmetic operations (one multiply, one add).</p>
+<p>A modern chip can do several hundred operations in the time it moves one byte. Two operations per byte leaves the compute units idle most of the time. Decoding is therefore <span class="hl red">memory-bound</span>: the time per token is about the bytes of weights divided by memory bandwidth.</p>
+<pre>time per token ≈ bytes of active weights ÷ memory bandwidth</pre>
+<div class="fig"><canvas id="c-mem"></canvas><div class="readout" id="r-mem"></div></div>
+<div class="cap">Left: memory, one row per layer. Each sweep reads all active weights for one token. The animation runs slower than real time; the readout shows the real figures for the machine in the panel. Weights are stored as 8-bit numbers (1 byte each). Try the wafer: Cerebras keeps the weights in on-chip SRAM, which moves bytes thousands of times faster than the stacked DRAM (HBM) next to a GPU. One wafer holds only 44 GB, so the panel shows a warning when the weights do not fit; the toy does not model the links between wafers.</div>
+<p>Two design choices change the byte count. A <span class="hl yellow">dense</span> model uses every weight for every token. A <span class="hl teal">mixture-of-experts (MoE)</span> model splits most weights into many "experts" and sends each token to a few of them. The public DeepSeek-V3 design has 671B weights in total but uses only about 37B per token. That is why large MoE models can decode fast. Section 5 shows the catch.</p>
+<p>Several chips can share one copy of the model. Each chip then holds and reads a slice, so their bandwidths add up. They must also exchange results at every layer, and that adds a small fixed delay per pass. With enough fast memory, that fixed delay becomes the limit: the readout then says <span class="hl orange">latency-bound</span>. Real servers fight it with fused kernels and by decoding several guessed tokens per pass.</p>
+
+<h2 id="s3"><span class="n">3</span>Reading the prompt runs in parallel, so input is cheap and output is dear</h2>
+<p>The prompt is different. All prompt tokens are known before the model starts, so the chip can push all of them through each layer at once. One read of a weight now serves thousands of tokens. This phase is called <span class="hl green">prefill</span>. With a long prompt it does many operations per byte, so the arithmetic units, not memory, set its speed: it is <span class="hl green">compute-bound</span>. A short prompt still has to read every weight once, so a prefill of a few tokens is memory-bound like decode. The token-by-token phase from section 2 is called <span class="hl blue">decode</span>.</p>
+<div class="fig"><canvas id="c-pd"></canvas><div class="readout" id="r-pd"></div></div>
+<div class="cap">Both lanes produce 8 tokens. Prefill reads the weights once for all 8. Decode reads them 8 times, one token at a time.</div>
+<p>The roofline plot below is the standard way to see this. The x-axis is <i>arithmetic intensity</i>: operations per byte moved. Below the ridge point, memory bandwidth sets the speed. Above it, compute sets it. Decode sits far left. Prefill of a long prompt sits far right.</p>
+<div class="fig"><svg id="svg-roof" height="260"></svg>
+  <div class="ctl"><label>prompt tokens <input type="range" id="i-pfN" min="2" max="5.5" step="0.05" value="4"><span id="o-pfN"></span></label></div>
+  <div class="readout" id="r-roof"></div></div>
+<div class="cap">Log-log axes. The flat roof is the chips' peak arithmetic rate; the sloped roof is bandwidth × intensity. The timing demos assume 50% of peak in decode and 40% in prefill. These efficiencies are illustrative.</div>
+<p>This gives the first client-side law. <b>On GPU serving, a long prefill processes input tokens far faster than decode emits output tokens</b>; the ratio depends on context, batch, hardware and caching. Your compaction benchmark agrees: wall time followed output length with R² <span id="t-r2"></span>, and context size explained almost none of it (R² <span id="t-r2b"></span>).</p>
+
+<h2 id="s4"><span class="n">4</span>Attention keeps a memory of every token, so long context slows each step</h2>
+<p>So far each pass read only the weights. The model also needs to look back at earlier tokens. The mechanism is <span class="hl orange">attention</span>: for every past token the model keeps two vectors, a key and a value, and each new token compares itself with all of them. The stored vectors are the <span class="hl orange">KV cache</span>. It grows by a fixed number of bytes per token of context.</p>
+<p>Each decode step must read the whole KV cache, so its bytes add to the weight bytes from section 2. The toy stores each KV element in one byte. At that precision, 100k tokens of context use 16.4 GB of KV cache for the dense 70B model, about 23% of its 70 GB of weights; 16-bit storage doubles it. Prefill pays too: every prompt token compares itself with every earlier one, so attention work grows as <i>N</i>². That is <span class="hl orange">quadratic attention</span>.</p>
+<p><span class="hl teal">Linear attention</span> and state-space layers replace the growing cache with a fixed-size state, so each step costs the same at any context length. Many recent models are hybrids: their full-attention layers keep a growing cache, so their cost still grows with context, only more slowly. The dashed curve below is a model built entirely from fixed-state layers. Other tricks shrink the cache without removing it: sharing keys across heads, compressing them, or attending only to a recent window.</p>
+<div class="fig"><canvas id="c-kv"></canvas>
+  <div class="ctl"><button id="b-quad" class="on">quadratic attention</button><button id="b-lin">linear attention</button></div></div>
+<div class="cap">Each new token (right) reads every stored key and value (quadratic), or one fixed state (linear). The bar under the tiles shows bytes read per step: weights in purple, KV cache in orange.</div>
+<div class="fig"><svg id="svg-tpsn" height="240"></svg><div class="readout" id="r-tpsn"></div></div>
+<div class="cap">Decode speed for one user against context length on the panel's machine. Solid: quadratic attention. Dashed: a linear-attention state the size of 4k tokens of cache.</div>
+
+<h2 id="s5"><span class="n">5</span>Many users share one weight read, and the provider chooses your speed</h2>
+<p>Section 2 had one user per pass. Providers put many users' tokens in the same pass: a <span class="hl purple">batch</span>. One read of the weights now serves the whole batch, so the chip produces far more tokens per second in total. Each user's KV cache is private, though, so its bytes add up. Past some batch size the compute units fill, and every extra user slows everyone.</p>
+<p>The provider picks the batch size. A large batch gives cheap tokens and a slow stream for each user. A small batch gives a fast stream at a higher price per token. Providers trade throughput for speed with batch size, chips per copy, kernels and other optimisations. A "fast mode" buys lower latency; which of these levers it pulls is usually not disclosed.</p>
+<div class="fig"><svg id="svg-batch" height="250"></svg>
+  <div class="ctl"><label>batch size <input type="range" id="i-B" min="0" max="9" step="0.05" value="5"><span id="o-B"></span></label>
+  <label>context per user <input type="range" id="i-BN" min="3" max="5.4" step="0.05" value="4.3"><span id="o-BN"></span></label></div>
+  <div class="readout" id="r-batch"></div></div>
+<div class="cap">Blue: tokens per second for one user. Grey: tokens per second for the whole batch. Both use the panel's machine.</div>
+<p>Now the MoE catch. One token uses 8 of 256 experts. In this toy, each token picks its 8 experts uniformly and independently. A batch of 64 tokens then touches about 87% of the experts on average. Real routing is skewed and correlated, but the direction holds. At large batch an MoE model reads almost all of its weights every pass, like a dense model of its full size. Its per-token arithmetic stays small, though.</p>
+<div class="fig"><canvas id="c-moe"></canvas><div class="readout" id="r-moe"></div></div>
+<div class="cap">256 experts. Each token of the current batch lights the 8 experts it uses. The expected fraction lit under uniform routing is 1 − (1 − 8/256)<sup>B</sup>. Choose the MoE model in the panel to see it change with batch size.</div>
+
+<h2 id="s6"><span class="n">6</span>A cache hit skips the prefill, not the decode</h2>
+<p>An agent sends almost the same context again on every turn: the old conversation plus a few new messages. The KV cache from section 4 is exactly the result of prefill. The provider can keep it and reuse it when the next request starts with the same prefix. This is the <span class="hl green">prompt cache</span>. A hit removes the prefill work for the cached prefix. The new tokens still need prefill, and every output token still needs a full decode step.</p>
+<p>The time to first token (<span class="hl blue">TTFT</span>) therefore splits into a fixed floor (network, queue, routing, cache lookup) plus prefill of the uncached tokens. Prices follow the work. A cached input token costs about a tenth of a fresh one, and an output token costs several fresh ones.</p>
+<pre>TTFT ≈ floor + prefill(uncached tokens | cached prefix)
+cost ≈ uncached × p_in + cached × p_cache + output × p_out</pre>
+<div class="fig"><canvas id="c-cache"></canvas>
+  <div class="ctl"><label>context <input type="range" id="i-cN" min="4" max="5.48" step="0.02" value="5"><span id="o-cN"></span></label>
+  <label>read from cache <input type="range" id="i-cH" min="0" max="1" step="0.01" value="0.95"><span id="o-cH"></span></label></div>
+  <div class="readout" id="r-cache"></div></div>
+<div class="cap">Green: the cached prefix, loaded at once. Orange: uncached tokens, prefilled at the panel machine's rate. The floor is fixed at 0.5 s here. Prices are the claude-sonnet-5-5 list prices used in the benchmark report: $2 input, $0.20 cache read, $10 output per million tokens.</div>
+
+<h2 id="s7"><span class="n">7</span>What the client sees: TTFT, decoding, and stalls</h2>
+<p>A client sees a stream of chunks with timestamps. agent-speed splits each request's wall time into five parts:</p>
+<ul>
+<li><span class="hl" style="background:#ddd">TTFT floor</span>: the shortest first-token wait the route ever shows.</li>
+<li><span class="hl" style="background:#ecebe6">TTFT variance</span>: the rest of the first-token wait (queue, prefill, cache misses).</li>
+<li><span class="hl blue">decoding</span>: output tokens at the steady stream rate.</li>
+<li><span class="hl red">stall during decoding</span>: gaps inside the stream.</li>
+<li><span class="hl orange">stall after last token</span>: time between the last token and the end of the response.</li>
+</ul>
+<p>One known cause of gaps is sharing. When a new request joins a busy server, its prefill competes with the decode streams for the chip. Servers cut long prefills into chunks to limit this interference. Some servers move prefill to separate chips (<i>disaggregation</i>), which removes the shared-compute contention but adds a transfer of the KV cache. Client timestamps show the gaps, not their cause, and the client cannot see which design a route uses.</p>
+<div class="fig"><canvas id="c-time"></canvas>
+  <div class="ctl"><button id="b-send">send request</button><button id="b-dis">prefill on separate chips: off</button><label>other requests per second <input type="range" id="i-lam" min="0" max="4" step="0.1" value="1"><span id="o-lam"></span></label></div>
+  <div class="readout" id="r-time"></div></div>
+<div class="cap">A simulated 600-token response at the panel machine's decode speed (batch 32, 50k context). In this simulation each red gap is another user's prefill chunk. The stall after the last token is drawn at random from 0.1–1.2 s. Its causes (tool-call checks, filters, accounting) are a guess. The client sees only the duration. The stacked bars keep the last six runs.</div>
+
+<h2 id="s8"><span class="n">8</span>Compaction is one more request, so the same laws set its cost and wait</h2>
+<p>When the context nears the window limit, the agent <span class="hl purple">compacts</span> it. A model writes a shorter replacement, and the session continues from that. The rest of this page applies directly:</p>
+<ul>
+<li><b>Wait</b> ≈ TTFT + output ÷ effective output rate. The summary is output, so its length sets most of the wait (sections 2 and 3).</li>
+<li><b>Cost</b>: pi's native compaction sends a new summarizer prompt, so it pays fresh-input price for the whole history. An in-session method continues the cached conversation and pays the cache price (section 6).</li>
+<li><b>Carry</b>: every later turn reads what compaction leaves, at the cache price. A larger leftover costs a little on each turn and brings the next compaction sooner.</li>
+</ul>
+<p>Your benchmark agrees with the wait law on its two routes. On both models one straight line in output tokens fits all methods. Its slope is an effective seconds-per-output-token rate for these runs; it includes any overhead that grows with output.</p>
+<div class="fig"><svg id="svg-cw" height="270"></svg></div>
+<div class="cap" id="cap-cw"></div>
+<p>The cost law shows best over a whole session. The demo grows the context by a fixed amount per turn and compacts at the threshold. It compares the two cost models from the benchmark. Every turn also pays to read the context at the cache price.</p>
+<div class="fig"><svg id="svg-saw" height="230"></svg>
+  <div class="ctl"><label>threshold <input type="range" id="i-T" min="60" max="300" step="10" value="180"><span id="o-T"></span></label>
+  <label>left after compaction <input type="range" id="i-K" min="5" max="60" step="1" value="25"><span id="o-K"></span></label>
+  <label>growth per turn <input type="range" id="i-g" min="0.5" max="8" step="0.5" value="3"><span id="o-g"></span></label></div>
+  <div class="readout" id="r-saw"></div></div>
+<div class="cap">300 turns. Compaction output fixed at 3.5k tokens, the benchmark median. Native pays the history at the fresh-input price (Sonnet via Magpie bills it as a cache write, $2.50); in-session pays it at the cache price. Turn output is not counted, because it is the same for both. Every ordinary turn is assumed to read its context from cache; first writes, cache expiry and rebuilding the cache after compaction are omitted.</div>
+
+<h2 id="s9"><span class="n">9</span>What a client can rely on</h2>
+<p>Each law below states what it holds for and its evidence. <span class="tag m">measured</span> means your own logs or benchmark show it. <span class="tag s">standard</span> means it follows from the physics above and published systems work, but these logs do not isolate it. <span class="tag p">provisional</span> means it is plausible and unverified.</p>
+<table id="t-laws"></table>
+
+<h2 id="s10"><span class="n">10</span>Limits of this page</h2>
+<ul>
+<li>The toy machine ignores many real effects: kernel efficiency, network hops, speculative decoding, quantization below 8 bits, shared prefixes between users, and scheduling policy. Its utilisation (50% decode, 40% prefill) and per-layer sync delay are assumptions. It shows directions and orders of magnitude.</li>
+<li>Chip figures are rounded public numbers: H100-class 80 GB, 3.35 TB/s and about 1 PFLOP/s dense 16-bit; B200-class 180 GB, 8 TB/s and 2.25 PFLOP/s; Cerebras WSE-3 44 GB of SRAM at 21 PB/s and 125 PFLOP/s (vendor figure). At 1 byte per weight the 671B model needs at least 16 wafers and the 70B model 2. The toy sums bandwidth across chips and ignores the links between wafers, so it does not predict a real Cerebras deployment.</li>
+<li>Frontier models (claude-sonnet-5-5, gpt-6.1-sol) do not publish their shapes. Their measured decode speeds (about 136 and 37 tokens per second in the benchmark) include all the choices above, and the client cannot separate them.</li>
+<li>The benchmark data are 63 compactions on 9 slices per model. See <code>../compaction-bench/report.html</code>.</li>
+</ul>
+</main>
+<aside><div class="toc" id="toc"></div></aside>
+</div>
+
+<div id="panel">
+  <h4>machine</h4>
+  <div class="row">chip <select id="p-chip"></select></div>
+  <div class="row">chips per copy <select id="p-G"><option>1</option><option>2</option><option selected>4</option><option>8</option></select></div>
+  <div class="row">model <select id="p-model"></select></div>
+  <div class="row">animation <select id="p-speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></div>
+  <div class="sum" id="p-sum"></div>
+</div>
+
+<script>
+const DATA = /*DATA*/null;
+const $ = (id) => document.getElementById(id);
+const C = Object.fromEntries(["blue","green","red","purple","yellow","teal","orange","gray","fg","mute","line","box","soft"].map((k) => [k, getComputedStyle(document.documentElement).getPropertyValue("--" + k).trim()]));
+$("date").textContent = "2026-10-11";
+
+// ---------- the toy machine ----------
+const CHIPS = {
+  h100: { name: "H100-class GPU", bw: 3.35e12, fl: 0.99e15, mem: 80e9 },
+  b200: { name: "B200-class GPU", bw: 8e12, fl: 2.25e15, mem: 180e9 },
+  wse3: { name: "Cerebras WSE-3", bw: 21e15, fl: 125e15, mem: 44e9 },
+};
+// 1 byte per weight and per KV element. kv = KV-cache bytes per token of context.
+// attD / attP = attention FLOPs per (new token × context position) in decode / prefill.
+// Dense (Llama-3-70B shape, 64 heads × 128): 2·L·H·(qk + v) = 4·L·d.
+// MoE (DeepSeek-V3 MLA): decode uses the absorbed latent path, 2·L·H·(2·512 + 64);
+// prefill uses expanded heads, 2·L·H·(192 + 128).
+const MODELS = {
+  dense: { name: "dense 70B", total: 70e9, shared: 70e9, pool: 0, E: 1, k: 1, L: 80, kv: 163840, attD: 4 * 80 * 8192, attP: 4 * 80 * 8192 },
+  moe: { name: "MoE 671B, 37B active", total: 671e9, shared: 17e9, pool: 654e9, E: 256, k: 8, L: 61, kv: 35136, attD: 2 * 61 * 128 * 1088, attP: 2 * 61 * 128 * 320 },
+};
+for (const m of Object.values(MODELS)) m.active = m.shared + m.pool * m.k / m.E;
+const P = { chip: "b200", G: 4, model: "dense" };
+const LIN_STATE = 4096; // linear attention: fixed state, sized like 4k tokens of cache
+
+const weightBytes = (m, B) => m.pool ? m.shared + m.pool * (1 - Math.pow(1 - m.k / m.E, B)) : m.total;
+function decode(o) {
+  const c = CHIPS[o.chip ?? P.chip], m = MODELS[o.model ?? P.model], G = o.G ?? P.G, B = o.B ?? 1;
+  const N = o.linear ? LIN_STATE : (o.N ?? 4000);
+  const wb = weightBytes(m, B), kb = B * N * m.kv;
+  const tm = (wb + kb) / (c.bw * G);
+  const tc = B * (2 * m.active + m.attD * N) / (c.fl * G * 0.5);
+  const over = m.L * (8e-6 + (G > 1 ? 10e-6 : 0)); // kernel launches + per-layer sync between chips
+  const t = Math.max(tm, tc) + over;
+  return { t, tm, tc, over, wb, kb, tps: 1 / t, thr: B / t, bound: over > Math.max(tm, tc) ? "latency" : tm > tc ? "memory" : "compute", fits: m.total + kb <= G * c.mem };
+}
+function prefill(o) { // seconds to prefill U new tokens after a cached prefix of Cc tokens
+  const c = CHIPS[o.chip ?? P.chip], m = MODELS[o.model ?? P.model], G = o.G ?? P.G, U = o.U, Cc = o.C ?? 0;
+  const att = o.linear ? m.attP * U * LIN_STATE : m.attP * U * (Cc + U / 2);
+  const fl = 2 * m.active * U + att, bytes = weightBytes(m, U) + (Cc + U) * m.kv;
+  // Compute roof at 40% utilisation, but never faster than one read of the weights and cache.
+  return { t: Math.max(fl / (c.fl * G * 0.4), bytes / (c.bw * G)) + 0.002, fl, bytes };
+}
+
+// ---------- formatting ----------
+const fx = (x, d = 0) => x.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
+const ms = (s) => s < 1e-4 ? fx(s * 1e6, 1) + " µs" : s < 0.01 ? fx(s * 1000, 2) + " ms" : s < 1 ? fx(s * 1000, 1) + " ms" : fx(s, 2) + " s";
+const by = (b) => b >= 1e12 ? fx(b / 1e12, 2) + " TB" : b >= 1e9 ? fx(b / 1e9, 1) + " GB" : fx(b / 1e6, 1) + " MB";
+const kt = (n) => n >= 1000 ? fx(n / 1000, n < 10000 ? 1 : 0) + "k" : fx(n);
+const tps = (x) => fx(x, x < 10 ? 1 : 0) + " tok/s";
+const usd = (x) => "$" + (x < 1 ? x.toFixed(3) : x.toFixed(2));
+
+// ---------- animation loop: one clock, paused off-screen ----------
+let SPEED = 1;
+const demos = [];
+const io = new IntersectionObserver((es) => es.forEach((e) => { const d = demos.find((x) => x.el === e.target); if (d) d.vis = e.isIntersecting; }));
+function animate(el, tick) { const d = { el, tick, vis: false }; demos.push(d); io.observe(el); }
+let last = performance.now();
+const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+function loop(t) { const dt = Math.min(0.05, (t - last) / 1000) * SPEED * (still ? 0.25 : 1); last = t; for (const d of demos) if (d.vis) d.tick(dt); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+
+function canvas(id, h) {
+  const c = $(id), x = c.getContext("2d"), o = { c, x, H: h, W: 0 };
+  const fit = () => { const r = devicePixelRatio || 1; o.W = c.clientWidth; c.width = o.W * r; c.height = h * r; c.style.height = h + "px"; x.setTransform(r, 0, 0, r, 0, 0); };
+  fit(); addEventListener("resize", fit);
+  return o;
+}
+function rect(x, X, Y, w, h, fill, r = 3) { x.fillStyle = fill; x.beginPath(); x.roundRect(X, Y, w, h, r); x.fill(); }
+function text(x, s, X, Y, o = {}) { x.font = `${o.w || 400} ${o.size || 12}px "Paper Mono", monospace`; x.fillStyle = o.color || C.fg; x.textAlign = o.align || "left"; x.textBaseline = o.base || "middle"; x.fillText(s, X, Y); }
+const ease = (t) => t < 0 ? 0 : t > 1 ? 1 : t * t * (3 - 2 * t);
+
+// ---------- panel ----------
+for (const [k, v] of Object.entries(CHIPS)) $("p-chip").add(new Option(v.name, k, false, k === P.chip));
+for (const [k, v] of Object.entries(MODELS)) $("p-model").add(new Option(v.name, k, false, k === P.model));
+const listeners = [];
+const onMachine = (f) => { listeners.push(f); f(); };
+function machineChanged() {
+  P.chip = $("p-chip").value; P.G = +$("p-G").value; P.model = $("p-model").value;
+  const d = decode({}), m = MODELS[P.model];
+  $("p-sum").innerHTML = `${m.name}: ${by(m.active)} read per token, ${by(m.total)} stored.<br>One user, 4k context: <b>${tps(d.tps)}</b>, ${d.bound}-bound.` + (d.fits ? "" : `<br><span style="color:${C.red}">Does not fit in ${P.G} × ${by(CHIPS[P.chip].mem)}: add chips.</span>`);
+  listeners.forEach((f) => f());
+}
+["p-chip", "p-G", "p-model"].forEach((id) => $(id).addEventListener("change", machineChanged));
+$("p-speed").addEventListener("change", () => SPEED = +$("p-speed").value);
+
+// ---------- 1. the loop ----------
+{
+  const V = canvas("c-loop", 150);
+  const prompt = ["Fix", " the", " failing", " test", " in", " parser", ".py"], out = [" I", "'ll", " read", " parser", ".py", " first", ".", " The", " test", " expects"];
+  const cols = [C.blue, C.teal, C.purple, C.orange, C.green, C.yellow, C.red];
+  let t = 0;
+  const step = 1.1;
+  animate(V.c, (dt) => {
+    t += dt; const x = V.x, W = V.W; x.clearRect(0, 0, W, V.H);
+    const n = Math.min(out.length, Math.floor(t / step)), ph = (t % step) / step;
+    if (t > step * (out.length + 2)) t = 0;
+    const toks = [...prompt.map((s) => [s, C.box]), ...out.slice(0, n).map((s, i) => [s, cols[i % cols.length]])];
+    x.font = `400 12px "Paper Mono", monospace`;
+    let X = 10, Y = 104; const pos = [];
+    for (const [s] of toks) { const w = x.measureText(s.trim()).width + 14; if (X + w > W - 10) { X = 10; Y += 0; } pos.push([X, w]); X += w + 4; }
+    const scale = Math.min(1, (W - 20) / X);
+    toks.forEach(([s, col], i) => { const [px, w] = pos[i]; const reading = n < out.length && ph < 0.55; rect(x, 10 + (px - 10) * scale, Y - 13, w * scale, 26, col); if (reading) { x.globalAlpha = 0.25 * Math.sin(Math.PI * ph / 0.55); rect(x, 10 + (px - 10) * scale, Y - 13, w * scale, 26, C.fg); x.globalAlpha = 1; } text(x, s.trim(), 10 + (px - 10) * scale + w * scale / 2, Y, { align: "center", size: 11 * Math.max(0.8, scale) }); });
+    const mx = W / 2 - 70; rect(x, mx, 14, 140, 40, C.fg, 5); text(x, "model f(context)", W / 2, 34, { align: "center", color: "#fff" });
+    text(x, `pass ${Math.min(n + 1, out.length)} · context ${toks.length} tokens`, 10, 140, { color: C.mute, size: 11 });
+    if (n < out.length) {
+      if (ph < 0.55) { x.strokeStyle = C.mute; x.setLineDash([3, 3]); x.beginPath(); x.moveTo(W / 2, Y - 14); x.lineTo(W / 2, 55); x.stroke(); x.setLineDash([]); text(x, "read context", W / 2 + 8, 72, { color: C.mute, size: 11 }); }
+      else { const k = ease((ph - 0.55) / 0.45); const [px, w] = [X, 50]; const tx = 10 + (px - 10) * scale, ty = Y - 13; const sx = W / 2 - 25, sy = 58; rect(x, sx + (tx - sx) * k, sy + (ty - sy) * k, 50 * scale, 26, cols[n % cols.length]); text(x, out[n].trim(), sx + (tx - sx) * k + 25 * scale, sy + (ty - sy) * k + 13, { align: "center", size: 11 }); }
+    }
+  });
+}
+
+// ---------- 2. memory wall ----------
+{
+  const V = canvas("c-mem", 210);
+  let ph = 0, emitted = 0, real = 0.02, slow = 1;
+  onMachine(() => {
+    const d = decode({ B: 1, N: 4000 }), m = MODELS[P.model], c = CHIPS[P.chip];
+    real = d.t; slow = Math.max(1, 0.9 / real);
+    $("r-mem").innerHTML = `One token reads <b>${by(d.wb)}</b> of weights (+ ${by(d.kb)} of KV cache at 4k context, section 4) at ${P.G} × ${fx(c.bw / 1e12, c.bw > 1e14 ? 0 : 2)} TB/s → memory time <b>${ms(d.tm)}</b>. The arithmetic needs only <b>${ms(d.tc)}</b>. Sync and kernel overhead add ${ms(d.over)}. Result: <b>${ms(d.t)} per token = ${tps(d.tps)}</b> for one user (${d.bound}-bound). Animation ${fx(slow, 0)}× slower than real time.` + (d.fits ? "" : ` <span style="color:${C.red}">This model needs at least ${Math.ceil(m.total / c.mem)} of these chips to hold its weights; the figures assume it fits.</span>`);
+  });
+  animate(V.c, (dt) => {
+    const x = V.x, W = V.W; x.clearRect(0, 0, W, V.H);
+    const period = real * slow; ph += dt / period; if (ph >= 1) { ph -= 1; emitted++; }
+    const m = MODELS[P.model], rows = 12, cols = 24, mw = Math.min(330, W * 0.45), cw = mw / cols, ch = 12;
+    text(x, `memory · ${by(m.total)}`, 10, 12, { color: C.mute, size: 11 });
+    const row = Math.floor(ph * rows);
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      let on = true;
+      if (m.pool && c >= 4) on = ((c * 7 + r * 13 + emitted * 5) % 32) < 1 + (c % 3 === 0); // a few experts per layer
+      const col = r === row && on ? C.purple : on ? "#cfc7e4" : C.box;
+      rect(x, 10 + c * cw, 26 + r * (ch + 2), cw - 2, ch, col, 1.5);
+    }
+    if (m.pool) text(x, "shared │ experts (only the lit ones are read)", 10, 26 + rows * (ch + 2) + 10, { color: C.mute, size: 10.5 });
+    const cx = 10 + mw + 70, cwid = 110;
+    rect(x, cx, 70, cwid, 70, C.fg, 5); text(x, "compute", cx + cwid / 2, 98, { align: "center", color: "#fff" }); text(x, "mostly idle", cx + cwid / 2, 116, { align: "center", color: "#bbb", size: 10.5 });
+    for (let i = 0; i < 6; i++) { const k = (ph * rows * 1.0 + i / 6) % 1; const sy = 26 + row * (ch + 2) + ch / 2; x.fillStyle = C.purple; x.beginPath(); x.arc(10 + mw + 4 + k * 62, sy + (105 - sy) * k, 3, 0, 7); x.fill(); }
+    const ox = cx + cwid + 30; text(x, "tokens out", ox, 12, { color: C.mute, size: 11 });
+    const cl = [C.blue, C.teal, C.orange, C.green, C.yellow, C.red];
+    for (let i = 0; i < Math.min(emitted, 10); i++) rect(x, ox + (i % 5) * 26, 26 + Math.floor(i / 5) * 26, 22, 20, cl[(emitted - 1 - i) % 6]);
+    rect(x, 10, 196, (W - 20) * ph, 4, C.purple, 2);
+    if (emitted > 30) emitted = 0;
+  });
+}
+
+// ---------- 3. prefill vs decode + roofline ----------
+{
+  const V = canvas("c-pd", 170);
+  let t = 0, pf = 1, dc = 1;
+  onMachine(() => {
+    const N = 100000, p = prefill({ U: N }), d = decode({ B: 1, N });
+    pf = p.t; dc = d.t;
+    $("r-pd").innerHTML = `Panel machine, 100k-token prompt: prefill takes <b>${ms(p.t)}</b> = <b>${tps(N / p.t)}</b>. Decoding at that context runs at <b>${tps(d.tps)}</b>. One output token costs as much time as about <b>${fx(N / p.t / d.tps, 0)}</b> input tokens.`;
+  });
+  animate(V.c, (dt) => {
+    t += dt; const x = V.x, W = V.W; x.clearRect(0, 0, W, V.H);
+    const sweep = 0.7, total = sweep * 8 + 1.5; if (t > total) t = 0;
+    const lanes = [["prefill", 1.25 * sweep, 8, 26, C.green], ["decode", sweep, 1, 100, C.blue]];
+    for (const [name, sw, per, y, col] of lanes) {
+      text(x, name, 10, y + 10, { w: 600 });
+      const done = name === "prefill" ? Math.min(8, Math.floor(t / sw) * 8) : Math.min(8, Math.floor(t / sw));
+      const ph = (t % sw) / sw, active = done < 8;
+      rect(x, 90, y, 160, 20, C.box, 2); if (active) rect(x, 90, y, 160 * ph, 20, C.purple, 2);
+      text(x, active ? "reading weights" : "done", 170, y + 10, { align: "center", size: 10.5, color: active && ph > 0.5 ? "#fff" : C.fg });
+      for (let i = 0; i < 8; i++) rect(x, 270 + i * 34, y - 2, 28, 24, i < done ? col : "#fff", 3);
+      text(x, `${name === "prefill" ? Math.min(1, Math.floor(t / sw)) : done} weight read${name === "prefill" ? "" : "s"} · ${done}/8 tokens`, 270, y + 38, { color: C.mute, size: 10.5 });
+    }
+  });
+
+  const svg = $("svg-roof");
+  function roof() {
+    const c = CHIPS[P.chip], W = svg.clientWidth, H = 260, L = 60, R = 20, T = 14, B = 40;
+    const lx = (v) => L + (Math.log10(v) - 0) / 5 * (W - L - R), peak = c.fl * P.G, bw = c.bw * P.G;
+    const ymin = Math.log10(peak) - 4, ly = (v) => H - B - (Math.log10(v) - ymin) / 4.3 * (H - B - T);
+    const ridge = peak / bw, N = Math.round(10 ** +$("i-pfN").value), m = MODELS[P.model];
+    const dI = 2 * m.active / (m.active + 4000 * m.kv), pI = prefill({ U: N }).fl / prefill({ U: N }).bytes;
+    $("o-pfN").textContent = kt(N);
+    let s = "";
+    for (let e = 0; e <= 5; e++) s += `<line x1="${lx(10 ** e)}" x2="${lx(10 ** e)}" y1="${T}" y2="${H - B}" stroke="${C.line}"/><text x="${lx(10 ** e)}" y="${H - B + 16}" font-size="11" text-anchor="middle" fill="${C.mute}">${10 ** e >= 1000 ? 10 ** e / 1000 + "k" : 10 ** e}</text>`;
+    s += `<text x="${(L + W - R) / 2}" y="${H - 6}" font-size="11" text-anchor="middle" fill="${C.mute}">arithmetic intensity (operations per byte)</text><text x="12" y="${T + 6}" font-size="11" fill="${C.mute}">ops/s</text>`;
+    const pts = []; for (let v = 0; v <= 5; v += 0.02) pts.push([lx(10 ** v), ly(Math.min(peak, bw * 10 ** v))]);
+    s += `<polyline points="${pts.map((p) => p.join(",")).join(" ")}" fill="none" stroke="${C.fg}" stroke-width="2"/>`;
+    s += `<line x1="${lx(ridge)}" x2="${lx(ridge)}" y1="${ly(peak)}" y2="${H - B}" stroke="${C.mute}" stroke-dasharray="3 3"/><text x="${lx(ridge) + 6}" y="${ly(peak) + 16}" font-size="11" fill="${C.mute}">ridge ${fx(ridge)}</text>`;
+    const dot = (I, col, lab, dy) => { const right = lx(I) > W * 0.6; return `<circle cx="${lx(I)}" cy="${ly(Math.min(peak, bw * I))}" r="6" fill="${col}"/><text x="${lx(I) + (right ? -10 : 10)}" y="${ly(Math.min(peak, bw * I)) + dy}" font-size="11.5" text-anchor="${right ? "end" : "start"}">${lab}</text>`; };
+    s += dot(dI, C.blue, `decode, 1 user: ${fx(dI, 1)}`, 18) + dot(Math.max(1, pI), C.green, `prefill ${kt(N)} tokens: ${fx(pI)}`, -10);
+    svg.innerHTML = s;
+    $("r-roof").innerHTML = `Ridge at <b>${fx(ridge)}</b> operations per byte. Decode does about <b>${fx(dI, 1)}</b>, so it uses <b>${fx(100 * dI / ridge, 1)}%</b> of the arithmetic units. Prefill of ${kt(N)} tokens does <b>${fx(pI)}</b>${pI > ridge ? " and runs at the compute roof" : ""}.`;
+  }
+  $("i-pfN").addEventListener("input", roof); onMachine(roof); addEventListener("resize", roof);
+  const fo = DATA.fit_out, fb = DATA.fit_before;
+  $("t-r2").textContent = `${fo.sonnet.r2.toFixed(2)} (claude-sonnet-5-5) and ${fo.sol.r2.toFixed(2)} (gpt-6.1-sol)`;
+  $("t-r2b").textContent = `${fb.sonnet.r2.toFixed(2)} and ${fb.sol.r2.toFixed(2)}`;
+}
+
+// ---------- 4. KV cache ----------
+{
+  const V = canvas("c-kv", 190);
+  let lin = false, t = 0;
+  const set = (v) => { lin = v; $("b-quad").classList.toggle("on", !v); $("b-lin").classList.toggle("on", v); };
+  $("b-quad").onclick = () => set(false); $("b-lin").onclick = () => set(true);
+  animate(V.c, (dt) => {
+    t += dt; const x = V.x, W = V.W; x.clearRect(0, 0, W, V.H);
+    const max = 28, n = 4 + Math.floor(t / 0.45) % (max - 3), ph = (t % 0.45) / 0.45, tw = Math.min(22, (W - 120) / max);
+    for (let i = 0; i < n; i++) rect(x, 10 + i * tw, 90, tw - 3, 22, i === n - 1 ? C.blue : lin ? C.box : "#f3c9a8", 2);
+    const nx = 10 + (n - 1) * tw + tw / 2 - 1.5;
+    x.globalAlpha = 0.5 * (1 - ph);
+    if (lin) { rect(x, W - 100, 30, 80, 30, C.teal, 4); x.globalAlpha = 1; text(x, "state", W - 60, 45, { align: "center", color: "#fff" }); x.globalAlpha = 0.5 * (1 - ph); x.strokeStyle = C.teal; x.beginPath(); x.moveTo(nx, 90); x.quadraticCurveTo((nx + W - 60) / 2, 20, W - 60, 60); x.stroke(); }
+    else { x.strokeStyle = C.orange; for (let i = 0; i < n - 1; i++) { const sx = 10 + i * tw + tw / 2 - 1.5; x.beginPath(); x.moveTo(nx, 90); x.quadraticCurveTo((nx + sx) / 2, 90 - 14 - (nx - sx) * 0.35, sx, 90); x.stroke(); } }
+    x.globalAlpha = 1;
+    const m = MODELS[P.model], N = n * 4000, wb = m.active, kb = (lin ? LIN_STATE : N) * m.kv, sc = (W - 20) / (m.active + 30 * 4000 * m.kv);
+    rect(x, 10, 140, wb * sc, 14, C.purple, 2); rect(x, 10 + wb * sc, 140, kb * sc, 14, C.orange, 2);
+    text(x, `bytes read per step if each tile were 4k tokens: weights ${by(wb)} + KV ${by(kb)}`, 10, 172, { color: C.mute, size: 11 });
+  });
+  const svg = $("svg-tpsn");
+  function draw() {
+    const W = svg.clientWidth, H = 240, L = 56, R = 20, T = 14, B = 40, Nmax = 300000;
+    const q = [], l = []; for (let N = 1000; N <= Nmax; N += 3000) { q.push([N, decode({ N }).tps]); l.push([N, decode({ N, linear: true }).tps]); }
+    const ymax = Math.max(...q.map((p) => p[1]), ...l.map((p) => p[1])) * 1.1;
+    const X = (v) => L + v / Nmax * (W - L - R), Y = (v) => H - B - v / ymax * (H - B - T);
+    let s = "";
+    for (let i = 0; i <= 3; i++) s += `<line x1="${X(i * 1e5)}" x2="${X(i * 1e5)}" y1="${T}" y2="${H - B}" stroke="${C.line}"/><text x="${X(i * 1e5)}" y="${H - B + 16}" font-size="11" text-anchor="middle" fill="${C.mute}">${i * 100}k</text>`;
+    for (let i = 0; i <= 4; i++) { const v = ymax / 1.1 * i / 4; s += `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" stroke="${C.line}"/><text x="${L - 6}" y="${Y(v) + 4}" font-size="11" text-anchor="end" fill="${C.mute}">${fx(v)}</text>`; }
+    s += `<text x="${(L + W - R) / 2}" y="${H - 6}" font-size="11" text-anchor="middle" fill="${C.mute}">context (tokens)</text><text x="8" y="${T + 4}" font-size="11" fill="${C.mute}">tok/s</text>`;
+    s += `<polyline points="${q.map(([a, b]) => X(a) + "," + Y(b)).join(" ")}" fill="none" stroke="${C.orange}" stroke-width="2"/><polyline points="${l.map(([a, b]) => X(a) + "," + Y(b)).join(" ")}" fill="none" stroke="${C.teal}" stroke-width="2" stroke-dasharray="5 4"/>`;
+    svg.innerHTML = s;
+    const a = decode({ N: 10000 }), b = decode({ N: 250000 });
+    $("r-tpsn").innerHTML = `${MODELS[P.model].name}: ${tps(a.tps)} at 10k context, <b>${tps(b.tps)}</b> at 250k (${fx(100 * (1 - b.tps / a.tps))}% slower). The KV cache at 250k is <b>${by(250000 * MODELS[P.model].kv)}</b> per user against ${by(MODELS[P.model].active)} of active weights.`;
+  }
+  onMachine(draw); addEventListener("resize", draw);
+}
+
+// ---------- 5. batching + MoE ----------
+{
+  const svg = $("svg-batch");
+  const Bof = () => Math.round(2 ** +$("i-B").value), Nof = () => Math.round(10 ** +$("i-BN").value);
+  function draw() {
+    const W = svg.clientWidth, H = 250, L = 56, R = 60, T = 14, Bm = 40, N = Nof(), Bc = Bof();
+    $("o-B").textContent = Bc; $("o-BN").textContent = kt(N);
+    const pts = []; for (let e = 0; e <= 9; e += 0.1) { const B = Math.round(2 ** e); pts.push([B, decode({ B, N })]); }
+    const umax = Math.max(...pts.map((p) => p[1].tps)) * 1.1, tmax = Math.max(...pts.map((p) => p[1].thr)) * 1.1;
+    const X = (B) => L + Math.log2(B) / 9 * (W - L - R), Yu = (v) => H - Bm - v / umax * (H - Bm - T), Yt = (v) => H - Bm - v / tmax * (H - Bm - T);
+    let s = "";
+    for (let e = 0; e <= 9; e++) s += `<line x1="${X(2 ** e)}" x2="${X(2 ** e)}" y1="${T}" y2="${H - Bm}" stroke="${C.line}"/><text x="${X(2 ** e)}" y="${H - Bm + 16}" font-size="11" text-anchor="middle" fill="${C.mute}">${2 ** e}</text>`;
+    for (let i = 0; i <= 4; i++) s += `<text x="${L - 6}" y="${Yu(umax / 1.1 * i / 4) + 4}" font-size="11" text-anchor="end" fill="${C.blue}">${fx(umax / 1.1 * i / 4)}</text><text x="${W - R + 6}" y="${Yt(tmax / 1.1 * i / 4) + 4}" font-size="11" fill="${C.gray}">${kt(tmax / 1.1 * i / 4)}</text>`;
+    s += `<text x="${(L + W - R) / 2}" y="${H - 6}" font-size="11" text-anchor="middle" fill="${C.mute}">batch size (users per pass)</text><text x="8" y="${T + 4}" font-size="11" fill="${C.blue}">per user</text><text x="${W - 8}" y="${T + 4}" font-size="11" text-anchor="end" fill="${C.gray}">total</text>`;
+    s += `<polyline points="${pts.map(([B, d]) => X(B) + "," + Yt(d.thr)).join(" ")}" fill="none" stroke="${C.gray}" stroke-width="2"/><polyline points="${pts.map(([B, d]) => X(B) + "," + Yu(d.tps)).join(" ")}" fill="none" stroke="${C.blue}" stroke-width="2"/>`;
+    const d = decode({ B: Bc, N });
+    s += `<line x1="${X(Bc)}" x2="${X(Bc)}" y1="${T}" y2="${H - Bm}" stroke="${C.fg}"/><circle cx="${X(Bc)}" cy="${Yu(d.tps)}" r="5" fill="${C.blue}"/><circle cx="${X(Bc)}" cy="${Yt(d.thr)}" r="5" fill="${C.gray}"/>`;
+    svg.innerHTML = s;
+    const one = decode({ B: 1, N });
+    $("r-batch").innerHTML = `Batch ${Bc}: each user gets <b>${tps(d.tps)}</b> (${fx(100 * d.tps / one.tps)}% of the solo speed); the machine makes <b>${kt(d.thr)} tok/s</b> in total, ${fx(d.thr / one.thr, 1)}× the solo rate. Per pass it reads ${by(d.wb)} of weights and ${by(d.kb)} of KV cache; it is <b>${d.bound}-bound</b>.` + (d.fits ? "" : ` <span style="color:${C.red}">The weights plus this KV cache do not fit in the machine's memory; a real server would add chips or cap the batch.</span>`);
+  }
+  ["i-B", "i-BN"].forEach((id) => $(id).addEventListener("input", draw)); onMachine(draw); addEventListener("resize", draw);
+
+  const V = canvas("c-moe", 150);
+  let t = 0, lit = new Set();
+  animate(V.c, (dt) => {
+    t += dt; const x = V.x, W = V.W, m = MODELS[P.model], B = Bof();
+    if (t > 0.9 || !lit.size) { t = 0; lit = new Set(); for (let b = 0; b < B; b++) { const s = new Set(); while (s.size < 8) s.add(Math.floor(Math.random() * 256)); s.forEach((e) => lit.add(e)); } }
+    x.clearRect(0, 0, W, V.H); const cell = Math.min(8.5, (W - 20) / 32);
+    for (let i = 0; i < 256; i++) rect(x, 10 + (i % 32) * cell, 8 + Math.floor(i / 32) * cell, cell - 2, cell - 2, !m.pool || lit.has(i) ? C.purple : C.box, 1);
+    const f = m.pool ? lit.size / 256 : 1;
+    text(x, m.pool ? `batch ${B}: ${lit.size} of 256 experts lit (${fx(100 * f)}%; expected ${fx(100 * (1 - Math.pow(1 - 8 / 256, B)))}%)` : "dense model: every weight is used by every token", 10, 8 + 8 * cell + 18, { size: 11.5 });
+    if (m.pool) $("r-moe").innerHTML = `Weights read per pass: <b>${by(weightBytes(m, B))}</b> at batch ${B}, against ${by(m.active)} at batch 1 and ${by(m.total)} for all weights.`;
+    else $("r-moe").innerHTML = `Choose "${MODELS.moe.name}" in the machine panel to see the experts.`;
+  });
+}
+
+// ---------- 6. prompt cache ----------
+{
+  const V = canvas("c-cache", 110);
+  let t = 0, info = null;
+  function calc() {
+    const N = Math.round(10 ** +$("i-cN").value), h = +$("i-cH").value, Cc = Math.round(N * h), U = N - Cc;
+    $("o-cN").textContent = kt(N); $("o-cH").textContent = fx(100 * h) + "%";
+    const p = prefill({ U: Math.max(U, 1), C: Cc }), cold = prefill({ U: N }), floor = 0.5;
+    const cost = (U * 2 + Cc * 0.2) / 1e6, coldCost = N * 2 / 1e6;
+    info = { N, Cc, U, ttft: floor + p.t, floor };
+    $("r-cache").innerHTML = `${kt(Cc)} cached + ${kt(U)} new tokens → TTFT ≈ <b>${ms(floor + p.t)}</b> (cold: ${ms(floor + cold.t)}). Input cost <b>${usd(cost)}</b> (cold: ${usd(coldCost)}). One 2k-token answer then decodes for <b>${ms(2000 / decode({ N, B: 32 }).tps)}</b> at batch 32, cached or not.`;
+    t = 0;
+  }
+  ["i-cN", "i-cH"].forEach((id) => $(id).addEventListener("input", calc)); onMachine(calc);
+  animate(V.c, (dt) => {
+    t += dt; const x = V.x, W = V.W; x.clearRect(0, 0, W, V.H); if (!info) return;
+    const scale = 2.2 / Math.max(info.ttft, 0.6), T = info.ttft * scale; if (t > T + 1.6) t = 0;
+    const w = W - 20, cw = w * info.Cc / info.N, uw = w - cw, fill = Math.min(1, Math.max(0, (t - info.floor * scale) / (T - info.floor * scale)));
+    text(x, t < info.floor * scale ? "floor: network, queue, cache lookup" : fill < 1 ? "prefill of new tokens" : "first token", 10, 14, { color: C.mute, size: 11 });
+    rect(x, 10, 30, w, 30, "#fff", 3);
+    if (t > info.floor * scale) { rect(x, 10, 30, cw, 30, C.green, 3); rect(x, 10 + cw, 30, uw * fill, 30, C.orange, 3); }
+    if (fill >= 1) { rect(x, W - 34, 70, 24, 22, C.blue, 3); }
+    text(x, `cached ${kt(info.Cc)}`, 10, 80, { size: 11 }); text(x, `new ${kt(info.U)}`, 10 + cw + 4, 80, { size: 11, color: C.mute });
+  });
+}
+
+// ---------- 7. client timeline ----------
+{
+  const V = canvas("c-time", 210);
+  let dis = false, run = null, hist = [], tAll = 0;
+  $("b-dis").onclick = () => { dis = !dis; $("b-dis").textContent = `prefill on separate chips: ${dis ? "on" : "off"}`; $("b-dis").classList.toggle("on", dis); };
+  $("i-lam").addEventListener("input", () => $("o-lam").textContent = $("i-lam").value); $("o-lam").textContent = $("i-lam").value;
+  const expo = (r) => -Math.log(1 - Math.random()) / r;
+  function newRun() {
+    const d = decode({ B: 32, N: 50000 }), lam = +$("i-lam").value, out = 600;
+    const floor = 0.45, varT = expo(1 / 0.6) + prefill({ U: 3000, C: 47000 }).t;
+    const ev = []; let t = floor + varT; let tok = 0; const stalls = [];
+    while (tok < out) {
+      let next = t + 1 / d.tps;
+      tok++; ev.push(next); t = next;
+      if (!dis && lam > 0 && Math.random() < lam / d.tps) { const g = Math.min(0.15, 0.02 + prefill({ U: 2000 + Math.random() * 30000 }).t * 0.15); stalls.push([t, g]); t += g; }
+    }
+    const after = 0.1 + Math.random() * 1.1;
+    const dec = out / d.tps, stall = stalls.reduce((a, s) => a + s[1], 0);
+    return { floor, varT, ev, stalls, end: t + after, last: t, after, dec, stall, t: 0, tps: d.tps };
+  }
+  $("b-send").onclick = () => { run = newRun(); };
+  for (let i = 0; i < 5; i++) { const r = newRun(); r.t = r.end; hist.push(r); }
+  animate(V.c, (dt) => {
+    const x = V.x, W = V.W; x.clearRect(0, 0, W, V.H);
+    if (!run) run = newRun();
+    run.t += dt;
+    if (run.t > run.end + 1.2) { hist.unshift(run); hist = hist.slice(0, 6); run = newRun(); }
+    const sc = (W - 20) / Math.max(run.end, 4), Y = 30, now = Math.min(run.t, run.end);
+    text(x, `t = ${fx(now, 1)} s`, 10, 12, { color: C.mute, size: 11 });
+    rect(x, 10, Y, run.floor * sc, 22, "#d5d4cf", 2);
+    if (now > run.floor) rect(x, 10 + run.floor * sc, Y, Math.min(run.varT, now - run.floor) * sc, 22, "#ebeae5", 2);
+    x.fillStyle = C.blue; for (const e of run.ev) { if (e > now) break; x.fillRect(10 + e * sc, Y, Math.max(1, sc / run.tps * 0.6), 22); }
+    for (const [s, g] of run.stalls) { if (s > now) break; rect(x, 10 + s * sc, Y, Math.min(g, now - s) * sc, 22, C.red, 1); }
+    if (now > run.last) rect(x, 10 + run.last * sc, Y, (now - run.last) * sc, 22, C.orange, 1);
+    // stacked history
+    const rows = [run.t > run.end ? run : null, ...hist].filter(Boolean).slice(0, 6), mx = Math.max(...rows.map((r) => r.end), 4), hs = (W - 200) / mx;
+    rows.forEach((r, i) => {
+      const y = 76 + i * 21; let X = 130;
+      const parts = [[r.floor, "#d5d4cf"], [r.varT, "#ebeae5"], [r.dec, C.blue], [r.stall, C.red], [r.after, C.orange]];
+      text(x, r === run ? "this run" : `run −${i + (rows[0] === run ? 0 : 1)}`, 10, y + 8, { size: 11, color: C.mute });
+      for (const [v, col] of parts) { rect(x, X, y, v * hs, 16, col, 1); X += v * hs; }
+      text(x, `${fx(r.end, 1)} s`, X + 6, y + 8, { size: 11 });
+    });
+    if (rows.length) { const r = rows[0]; $("r-time").innerHTML = `Last run: TTFT floor ${ms(r.floor)} · TTFT variance ${ms(r.varT)} · decoding ${ms(r.dec)} (${tps(r.tps)}) · stall during decoding <b>${ms(r.stall)}</b> in ${r.stalls.length} gaps · stall after last token ${ms(r.after)}.`; }
+  });
+}
+
+// ---------- 8. compaction ----------
+{
+  const svg = $("svg-cw"), rows = DATA.rows, ARM = { native: C.blue, blackmagic: C.purple, summary: C.yellow, keepset: C.red };
+  function draw() {
+    const W = svg.clientWidth, H = 270, L = 50, R = 20, T = 34, B = 40;
+    const xmax = Math.ceil(Math.max(...rows.map((r) => r.c_out)) / 1000) + 0.5, ymax = Math.ceil(Math.max(...rows.map((r) => r.wall_s)) / 25) * 25;
+    const X = (v) => L + v / xmax * (W - L - R), Y = (v) => H - B - v / ymax * (H - B - T);
+    let s = "";
+    for (let i = 0; i <= xmax; i += 2) s += `<line x1="${X(i)}" x2="${X(i)}" y1="${T}" y2="${H - B}" stroke="${C.line}"/><text x="${X(i)}" y="${H - B + 16}" font-size="11" text-anchor="middle" fill="${C.mute}">${i}k</text>`;
+    for (let v = 0; v <= ymax; v += 25) s += `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" stroke="${C.line}"/><text x="${L - 6}" y="${Y(v) + 4}" font-size="11" text-anchor="end" fill="${C.mute}">${v}</text>`;
+    s += `<text x="${(L + W - R) / 2}" y="${H - 6}" font-size="11" text-anchor="middle" fill="${C.mute}">compaction output tokens</text><text x="${L - 6}" y="${T - 12}" font-size="11" text-anchor="end" fill="${C.mute}">wall s</text>`;
+    for (const [m, f] of Object.entries(DATA.fit_out)) { const x1 = Math.min(xmax, (ymax - f.a) / f.b); s += `<line x1="${X(0)}" y1="${Y(f.a)}" x2="${X(x1)}" y2="${Y(f.a + f.b * x1)}" stroke="${C.mute}" stroke-dasharray="4 3"/><text x="${X(x1) - 4}" y="${Y(f.a + f.b * x1) + (m === "sonnet" ? -8 : 16)}" font-size="11" text-anchor="end" fill="${C.mute}">${m === "sonnet" ? "claude-sonnet-5-5" : "gpt-6.1-sol"} ≈ ${fx(1000 / f.b)} tok/s</text>`; }
+    for (const r of rows) { const color = ARM[r.arm] || ARM[r.arm.replace(/c$/, "")]; s += r.model === "sonnet" ? `<circle cx="${X(r.c_out / 1000)}" cy="${Y(r.wall_s)}" r="4" fill="${color}"><title>${r.arm} ${fx(r.wall_s)} s</title></circle>` : `<path d="M${X(r.c_out / 1000)},${Y(r.wall_s) - 5}l4.5,8h-9z" fill="${color}"><title>${r.arm} ${fx(r.wall_s)} s</title></path>`; }
+    let lx = L + 10; for (const [a, col] of Object.entries(ARM)) { s += `<circle cx="${lx}" cy="8" r="4" fill="${col}"/><text x="${lx + 8}" y="12" font-size="11">${a === "native" ? "pi native" : a === "summary" ? "in-session summary" : a === "keepset" ? "in-session keepset" : a}</text>`; lx += a === "summary" ? 150 : a === "keepset" ? 150 : 95; }
+    svg.innerHTML = s;
+    const f = DATA.fit_out;
+    $("cap-cw").textContent = `${rows.length} compactions from the benchmark. Follow-up variants that retain harness instructions share their parent method's colour. Circles: claude-sonnet-5-5; triangles: gpt-6.1-sol. Fits: wall ≈ ${f.sonnet.a.toFixed(1)} s + ${f.sonnet.b.toFixed(2)} s per 1k output tokens (R² ${f.sonnet.r2.toFixed(2)}) and ${f.sol.a.toFixed(1)} s + ${f.sol.b.toFixed(2)} s per 1k (R² ${f.sol.r2.toFixed(2)}). The slope estimates an effective rate for these runs; the intercept holds TTFT and fixed overhead. Against context size before compaction, R² is ${DATA.fit_before.sonnet.r2.toFixed(2)} and ${DATA.fit_before.sol.r2.toFixed(2)}.`;
+  }
+  draw(); addEventListener("resize", draw);
+
+  const sv = $("svg-saw");
+  function saw() {
+    const T0 = +$("i-T").value * 1000, K = +$("i-K").value * 1000, g = +$("i-g").value * 1000, turns = 300, out = 3500;
+    $("o-T").textContent = kt(T0); $("o-K").textContent = kt(K); $("o-g").textContent = kt(g);
+    let ctx = 20000, nC = 0, read = 0, native = 0, inses = 0; const pts = [];
+    for (let i = 0; i < turns; i++) {
+      ctx += g; read += ctx * 0.2e-6;
+      if (ctx >= T0) { nC++; native += ctx * 2.5e-6 + out * 10e-6; inses += ctx * 0.2e-6 + out * 10e-6; pts.push([i, ctx]); ctx = K; }
+      pts.push([i, ctx]);
+    }
+    const W = sv.clientWidth, H = 230, L = 50, R = 20, Tp = 14, B = 36;
+    const X = (v) => L + v / turns * (W - L - R), Y = (v) => H - B - v / 300000 * (H - B - Tp);
+    let s = "";
+    for (let v = 0; v <= 300000; v += 100000) s += `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" stroke="${C.line}"/><text x="${L - 6}" y="${Y(v) + 4}" font-size="11" text-anchor="end" fill="${C.mute}">${v / 1000}k</text>`;
+    for (let i = 0; i <= turns; i += 50) s += `<text x="${X(i)}" y="${H - B + 16}" font-size="11" text-anchor="middle" fill="${C.mute}">${i}</text>`;
+    s += `<text x="${(L + W - R) / 2}" y="${H - 4}" font-size="11" text-anchor="middle" fill="${C.mute}">turn</text>`;
+    s += `<line x1="${L}" x2="${W - R}" y1="${Y(T0)}" y2="${Y(T0)}" stroke="${C.red}" stroke-dasharray="4 3"/><line x1="${L}" x2="${W - R}" y1="${Y(K)}" y2="${Y(K)}" stroke="${C.green}" stroke-dasharray="4 3"/>`;
+    s += `<polyline points="${pts.map(([a, b]) => X(a) + "," + Y(b)).join(" ")}" fill="none" stroke="${C.purple}" stroke-width="1.6"/>`;
+    sv.innerHTML = s;
+    const fs = DATA.fit_out.sonnet, wait = fs.a + fs.b * out / 1000;
+    $("r-saw").innerHTML = `<b>${nC}</b> compactions in ${turns} turns, one every ${fx((T0 - K) / g)} turns. Reading the context on every turn costs <b>${usd(read)}</b>. Compaction costs <b>${usd(native)}</b> native against <b>${usd(inses)}</b> in-session: ${fx(100 * native / (native + read))}% and ${fx(100 * inses / (inses + read))}% of the modelled bill (context reads plus compaction, ordinary turn output excluded). Each compaction waits about <b>${fx(wait)} s</b> on claude-sonnet-5-5 either way (benchmark fit at 3.5k output). Raise "left after compaction": compactions come more often, and every turn reads more.`;
+  }
+  ["i-T", "i-K", "i-g"].forEach((id) => $(id).addEventListener("input", saw)); saw(); addEventListener("resize", saw);
+}
+
+// ---------- 9. laws ----------
+{
+  const fo = DATA.fit_out;
+  const L = [
+    ["Output is serial: ordinary decoding confirms one token per pass.", "autoregressive models; speculative decoding confirms several per pass, with a workload-dependent gain", "s", "standard; the effective rate is what a client measures"],
+    ["Wait grows linearly with output tokens, at an effective rate per route.", "the two benchmark routes, all four compaction methods", "m", `compaction wall vs output R² ${fo.sonnet.r2.toFixed(2)} / ${fo.sol.r2.toFixed(2)}`],
+    ["Long prefill processes input far faster than decode emits output.", "GPU serving with long prompts; the ratio depends on context, batch, hardware and caching", "s", `benchmark agrees: wall vs context size R² ${DATA.fit_before.sonnet.r2.toFixed(2)} / ${DATA.fit_before.sol.r2.toFixed(2)}`],
+    ["A cache hit cuts input price and can cut TTFT; it does not remove decode work.", "providers with prompt caching", "s", "measured part: in-session compaction read 98% from cache and cost 0.37–0.47× native at a similar wait; TTFT not isolated"],
+    ["Providers trade per-user speed for throughput (batch size, chips per copy, kernels).", "shared serving", "s", "the mechanism behind a given fast mode is provisional; earlier fast-mode A/B on the Anthropic API: 3.09× tok/s, same model"],
+    ["Decode speed falls as context grows (full attention).", "fixed setup where KV reads or attention work are a large share of each step", "s", "not isolated in these logs; test: fixed-length output at 10k / 100k / 250k cached context"],
+    ["Prefill time grows faster than linearly in uncached length.", "full attention, long uncached input; nearly linear when new tokens are few against a cached prefix", "s", "not isolated; native compaction prefills the whole history but its wait was set by output"],
+    ["MoE reads few weights at small batch, nearly all at large batch.", "MoE serving, toy routing assumption", "s", "public architecture; a client cannot see batch size"],
+    ["Some stalls during decoding come from other requests' prefill.", "servers without full prefill/decode separation", "p", "client sees gaps only"],
+    ["Stall after last token is finalization (tool-call checks, filters, accounting).", "unknown per route", "p", "client sees duration only"],
+  ];
+  $("t-laws").innerHTML = `<tr><th>law</th><th>holds for</th><th>status</th><th>evidence or test</th></tr>` + L.map(([a, b, c, d]) => `<tr><td>${a}</td><td>${b}</td><td><span class="tag ${c}">${{ m: "measured", s: "standard", p: "provisional" }[c]}</span></td><td>${d}</td></tr>`).join("");
+}
+
+// ---------- toc ----------
+{
+  const hs = [...document.querySelectorAll("h2")];
+  $("toc").innerHTML = hs.map((h) => `<a href="#${h.id}">${h.textContent.replace(/^\d+/, "")}</a>`).join("");
+  const as = [...$("toc").children];
+  addEventListener("scroll", () => { let i = 0; hs.forEach((h, j) => { if (h.getBoundingClientRect().top < 140) i = j; }); as.forEach((a, j) => a.classList.toggle("cur", j === i)); });
+}
+machineChanged();
+</script>
+</body>
+</html>

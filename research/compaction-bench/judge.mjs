@@ -19,7 +19,7 @@ import { promisify } from "node:util";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const run = promisify(execFile);
 const JUDGE = ["--provider", "magpie", "--model", "claude/claude-opus-5-5", "--thinking", "medium"];
-const OUT = join(HERE, "judge.json");
+const OUT = join(HERE, process.env.JUDGE_OUT ?? "judge.json"); // JUDGE_OUT=judge2.json: a second pass measures judge agreement
 
 function tail(file, n = 8000) {
   // The last entries before the cut as plain text: what the probe answer can be checked against.
@@ -66,7 +66,7 @@ Reply with one JSON object only: {"request":n,"next":n,"facts":n,"note":"one sen
 
 async function main() {
   const index = JSON.parse(readFileSync(join(HERE, "slices/index.json"), "utf8"));
-  const rows = JSON.parse(readFileSync(join(HERE, "rows.json"), "utf8")).filter((r) => r.ok);
+  const rows = JSON.parse(readFileSync(join(HERE, "rows.json"), "utf8")).filter((r) => r.ok && r.answer);
   const done = existsSync(OUT) ? JSON.parse(readFileSync(OUT, "utf8")) : {};
   const todo = rows.filter((r) => !(done[r.id] && done[r.id].answer === r.answer)).slice(0, Number(process.env.JUDGE_LIMIT ?? Infinity));
   let i = 0;

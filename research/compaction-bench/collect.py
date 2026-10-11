@@ -10,12 +10,12 @@ Row fields:
   cost/cost_hi compaction cost at list price, USD (equal except blackmagic)
   after        measured context of the probe request: what the session carries on
   probe_*      the probe request's tokens and cost (first request on the new context)
-  answer       probe answer text, for the judge
+  answer       probe v2 answer (reprobe.mjs), for the judge; answer_v1 is the first probe's
 
 Run: python3 -I collect.py  ->  rows.json
 """
 
-import json, os
+import json, os, re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # USD per Mtok, list price (pi model data): input, output, cacheRead, cacheWrite
@@ -69,15 +69,32 @@ def row(dirname, index):
     r.update(probe_in=pu["input"], probe_cr=pu["cacheRead"], probe_cw=pu["cacheWrite"], probe_out=pu["output"],
              probe_cost=usd(meta["model"], pu["input"], pu["output"], pu["cacheRead"], pu["cacheWrite"]),
              probe_tools=sum(1 for m in probe for c in m["content"] if c.get("type") == "toolCall"))
-    r["answer"] = "\n".join(c["text"] for c in probe[-1]["content"] if c.get("type") == "text")
+    r["answer_v1"] = "\n".join(c["text"] for c in probe[-1]["content"] if c.get("type") == "text")
+    p2 = f"{HERE}/runs/{dirname}/probe2.json"  # reprobe.mjs; the judged answer
+    r["answer"] = json.load(open(p2))["answer"] if os.path.exists(p2) else None
+    return r
+
+
+def control(dirname, index):
+    # No-compaction control (reprobe.mjs): only the probe answer and the context it saw.
+    meta = json.load(open(f"{HERE}/runs/{dirname}/meta.json"))
+    sl = index[meta["slice"]]
+    r = dict(id=meta["id"], slice=meta["slice"], session=sl["session"], model=meta["model"], arm="none", tier=sl["tier"], ok=True, error=None, control=True,
+             rep=2 if dirname.endswith("__none2") else 1)
+    p2 = f"{HERE}/runs/{dirname}/probe2.json"
+    if os.path.exists(p2):
+        p = json.load(open(p2))
+        r.update(answer=p["answer"], after=ctx(p["usage"]))
     return r
 
 
 def main():
     index = json.load(open(f"{HERE}/slices/index.json"))
-    rows = [row(d, index) for d in sorted(os.listdir(f"{HERE}/runs")) if os.path.exists(f"{HERE}/runs/{d}/meta.json")]
+    rows = [row(d, index) if not re.search(r"__none\d?$", d) else control(d, index) for d in sorted(os.listdir(f"{HERE}/runs")) if os.path.exists(f"{HERE}/runs/{d}/meta.json")]
     json.dump(rows, open(f"{HERE}/rows.json", "w"), indent=1)
     for r in rows:
+        if r.get("control"):
+            continue
         if not r["ok"]:
             print(f"{r['id']:<36} FAILED {r['error']}")
             continue

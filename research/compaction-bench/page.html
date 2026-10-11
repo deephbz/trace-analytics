@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Compaction methods in pi: local benchmark</title>
+<style>
+  @font-face { font-family:"Paper Mono"; src:url(/*FONT*/) format("woff2"); font-weight:100 900; font-display:block; }
+  :root { color-scheme:light; --bg:#fbfaf7; --fg:#1d1d1b; --mute:#77756e; --line:#dedbd2; --soft:#f1efe9; }
+  body { margin:0; padding:24px 32px 64px; background:var(--bg); color:var(--fg); font:13px/1.55 "Paper Mono", ui-monospace, monospace; max-width:1180px; }
+  h1 { font-size:20px; margin:0 0 4px; line-height:1.3; } h2 { font-size:15px; margin:36px 0 6px; } h3 { font-size:13px; margin:18px 0 4px; }
+  .m { color:var(--mute); } p, li { max-width:920px; } .lead { font-size:13.5px; }
+  .notes { font-size:12.5px; color:var(--mute); max-width:920px; }
+  table { border-collapse:collapse; font-size:12.5px; margin:6px 0; font-variant-numeric:tabular-nums; }
+  td, th { padding:3px 9px; text-align:right; vertical-align:top; } td:first-child, th:first-child { text-align:left; }
+  th { font-weight:600; border-bottom:1px solid var(--line); } th.sp { border-bottom:none; text-align:center; color:var(--mute); font-weight:400; }
+  tr.grp td { border-top:1px solid var(--line); } td.l, th.l { text-align:left; } td.nw { white-space:nowrap; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; vertical-align:0; }
+  svg { display:block; overflow:visible; } svg text { fill:var(--fg); font-size:11px; } svg .m { fill:var(--mute); } svg .ax { stroke:var(--line); }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:28px; }
+  pre { font-size:12px; background:var(--soft); padding:10px 12px; border-radius:6px; overflow:auto; max-width:1100px; white-space:pre-wrap; }
+  code { font-size:12px; } select { font:inherit; }
+  .scroll { max-height:560px; overflow:auto; border:1px solid var(--line); border-radius:6px; }
+  .scroll table { margin:0; } .scroll th { position:sticky; top:0; background:var(--bg); }
+  details summary { cursor:pointer; }
+  #t-q td, #t-sum td, #t-after td, #t-cost td { white-space:nowrap; }
+</style>
+</head>
+<body>
+<h1 id="title"></h1>
+<div class="m" id="sub"></div>
+<p class="lead" id="abstract"></p>
+
+<h2>What one run does</h2>
+<pre id="model"></pre>
+
+<h2 id="h-sum"></h2>
+<p id="p-sum"></p>
+<div id="t-sum"></div>
+<div class="notes" id="n-sum"></div>
+
+<h2 id="h-time"></h2>
+<p id="p-time"></p>
+<div class="key m" id="key"></div>
+<div class="grid2"><div id="sc-out"></div><div id="sc-before"></div></div>
+<div class="notes" id="n-time"></div>
+
+<h2 id="h-dec"></h2>
+<p id="p-dec"></p>
+<div class="grid2"><div id="b-dec"></div><div id="sc-prefill"></div></div>
+<div id="t-reg"></div>
+<div class="notes" id="n-dec"></div>
+
+<h2 id="h-cost"></h2>
+<p id="p-cost"></p>
+<div class="grid2"><div id="sc-cost"></div><div id="t-cost"></div></div>
+<div class="notes" id="n-cost"></div>
+
+<h2 id="h-after"></h2>
+<p id="p-after"></p>
+<div class="key m" id="key-after"></div>
+<div class="grid2"><div id="cdf-sonnet"></div><div id="cdf-sol"></div></div>
+<div id="t-after"></div>
+<div class="notes" id="n-after"></div>
+
+<h2 id="h-q"></h2>
+<p id="p-q"></p>
+<pre id="q-why"></pre>
+<div id="t-why"></div>
+<h3>Per model, against the same slice without compaction</h3>
+<div id="t-q"></div>
+<div class="notes" id="n-q"></div>
+
+<h2>Limits</h2>
+<ul class="notes" id="limits"></ul>
+
+<h2>Methods and reproduction</h2>
+<div class="notes" id="methods"></div>
+<h3>Slices</h3>
+<div id="t-slices"></div>
+<h3>Runs</h3>
+<div class="notes">One row per run. Hover a recall cell for the judge's note. R/N/F are the REQUEST, NEXT and FACTS scores. <select id="filter"></select> <span id="count"></span></div>
+<div class="scroll"><table id="rows"></table></div>
+
+<script>
+const D = /*DATA*/null;
+const S = D.stats, ROWS = D.rows, CTL = D.controls;
+const $ = (id) => document.getElementById(id);
+const pct = (x, d = 0) => x == null ? "–" : (x * 100).toFixed(d) + "%";
+const k = (x) => x == null ? "–" : Math.round(x / 1000) + "k";
+const n0 = (x) => x == null ? "–" : Math.round(x).toLocaleString("en-US");
+const s0 = (x) => x == null ? "–" : Math.round(x) + " s";
+const x2 = (x) => x == null ? "–" : x.toFixed(2) + "×";
+const usd = (x) => x == null ? "–" : x < 0 ? "−" + usd(-x) : x < 0.1 ? "$" + x.toFixed(3) : "$" + x.toFixed(2);
+const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+const MODEL = { sonnet: "claude-sonnet-5-5", sol: "gpt-6.1-sol" };
+const ROUTE = { sonnet: "Claude subscription via Magpie", sol: "Codex subscription (openai-codex)" };
+const ARM = { native: "pi native summary", blackmagic: "blackmagic", summary: "in-session summary", keepset: "in-session keepset", summaryc: "in-session summary, record fixed", keepsetc: "in-session keepset, record fixed", none: "no compaction (control)" };
+const COLOR = { native: "#2f6fd6", blackmagic: "#6c4fc4", summary: "#b08900", keepset: "#c2408a", summaryc: "#2a8f5e", keepsetc: "#d9692b" };
+const TM = S.timing, MX = S.mechanism.arms;
+const f2 = (x) => x.toFixed(2);
+const dot = (a) => `<span class="dot" style="background:${COLOR[a] ?? "#999"}"></span>`;
+const SO = S.models.sonnet, SL = S.models.sol, A = (m, a) => S.models[m].arms[a];
+const nSlices = SO.slices.length;
+const range = (f) => [Math.min(f("sonnet"), f("sol")), Math.max(f("sonnet"), f("sol"))];
+const rng = ([a, b], fmt) => fmt(a) === fmt(b) ? fmt(a) : `${fmt(a)}–${fmt(b)}`;
+
+// ---- headline
+const inCost = range((m) => Math.min(A(m, "summary").cost_ratio_p50, A(m, "keepset").cost_ratio_p50)), inCostHi = range((m) => Math.max(A(m, "summary").cost_ratio_p50, A(m, "keepset").cost_ratio_p50));
+const lost = ["sonnet", "sol"].flatMap((m) => Object.values(S.models[m].arms).map((x) => S.models[m].control.q_total - x.q_total));
+const cheap = Math.min(...["sonnet", "sol"].flatMap((m) => ["summary", "keepset"].map((a) => A(m, a).cheaper_than_native)));
+$("title").textContent = `In-session compaction costs about half of pi's native summary. Decoding sets the wait. Its recall loss came from a record that dropped harness-delivered instructions.`;
+$("sub").textContent = `${ROWS.length} compactions + ${CTL.length} controls · ${nSlices} slices per model from 3 real pi sessions · ${MODEL.sonnet} and ${MODEL.sol} · driven through pi 1.1.0 in RPC mode · 2026-10-11`;
+$("abstract").innerHTML = `We replayed slices of real pi sessions at about 90k, 200k and 250–300k tokens of context and compacted each one with every method that applies to the model: pi's native summary, blackmagic (Codex remote compaction, ${MODEL.sol} only), and the two in-session methods from <code>experiment/keepset-compaction</code>: a summary and a keepset. Each method ran on the same slice, so every comparison below is paired by slice.
+The in-session methods read ${pct(Math.min(A("sonnet", "summary").cache_share_p50, A("sol", "summary").cache_share_p50))} of their input from the prompt cache and cost ${x2(Math.min(...inCost))}–${x2(Math.max(...inCostHi))} of native (median over slices); they were cheaper in at least ${cheap} of ${nSlices} slices for each model. They do not save time: wall time follows output tokens divided by the model's decode speed (R² ${SO.fit_wall_out.r2.toFixed(2)} on ${MODEL.sonnet}, ${SL.fit_wall_out.r2.toFixed(2)} on ${MODEL.sol}), and context size explains ${pct(Math.max(SO.fit_wall_before.r2, SL.fit_wall_before.r2))}. A ${MODEL.sol} compaction waits ${s0(A("sol", "native").wall_p50)} (native, p50) against ${s0(A("sonnet", "native").wall_p50)} on ${MODEL.sonnet}, because Sol decodes at ${n0(A("sol", "native").out_tps_p50)} tok/s against ${n0(A("sonnet", "native").out_tps_p50)}.
+Blackmagic is the slowest and dearest method on ${MODEL.sol} (${x2(A("sol", "blackmagic").wall_ratio_p50)} native's wall time, ${x2(A("sol", "blackmagic").cost_ratio_p50)} its cost at the cache-range midpoint) and leaves the smallest context (${k(A("sol", "blackmagic").after_p50)}). Keepset on ${MODEL.sol} leaves the largest (${k(A("sol", "keepset").after_p50)} against ${k(A("sol", "native").after_p50)} for native).
+A blind judge scored each agent's recall of its task, next step and key facts after compaction. The in-session methods first scored lower than native, mostly on the task and latest instruction. The cause is a defect in their verbatim record: it keeps user messages, but these Worker sessions receive every instruction as a harness message, so the latest instruction disappeared in ${MX.summary.n + MX.keepset.n - MX.summary.present - MX.keepset.present} of ${MX.summary.n + MX.keepset.n} in-session compactions. With harness messages kept, the instruction survived in ${MX.summaryc.present + MX.keepsetc.present} of ${MX.summaryc.n + MX.keepsetc.n}, and the in-session task-and-instruction score rose from ${f2((MX.summary.request + MX.keepset.request) / 2)} to ${f2((MX.summaryc.request + MX.keepsetc.request) / 2)} of 2, against ${f2(MX.native.request)} for native. The remaining differences in next step and facts are within the noise between two runs of the same method.`;
+
+$("model").textContent =
+`slice of a real session  ->  pi --mode rpc --session <copy>   (read-only tools, auto-compaction off)
+  1 warm-up turn     "state the task in two sentences"; caches the prefix as a live session would
+  2 compaction       native, blackmagic: RPC compact      summary, keepset: prompt "/keepset run"
+                     native      separate summarizer request on serialized history (tool output cut)
+                     blackmagic  whole context -> Codex remote compaction -> opaque window
+                     summary     same session writes a summary through compaction_plan (one cached call)
+                     keepset     same, plus a list of tool rounds to keep verbatim (24k budget)
+                     ..., record fixed  same two methods; harness messages kept in the verbatim record
+  3 probe turn       REQUEST / NEXT / FACTS from context; first request on the compacted context
+  control            probe on the slice without step 2`;
+
+// ---- summary table
+$("h-sum").textContent = "In-session methods halve the cost on both models and wait about as long as native, except Sol's in-session summary";
+$("p-sum").textContent = `Ratios compare each method with native on the same slice; the table shows their medians over ${nSlices} slices. On ${MODEL.sonnet}, summary and keepset waited about as long as native (${x2(A("sonnet", "summary").wall_ratio_p50)}, ${x2(A("sonnet", "keepset").wall_ratio_p50)}). On ${MODEL.sol}, in-session summary waited ${x2(A("sol", "summary").wall_ratio_p50)} as long as native because it wrote longer summaries (${n0(A("sol", "summary").out_p50)} tokens against ${n0(A("sol", "native").out_p50)}).`;
+const sumRow = (m, a) => { const x = A(m, a), nat = a === "native";
+  return `<tr><td>${dot(a)}${ARM[a]}</td><td>${s0(x.wall_p50)}</td><td>${nat ? "–" : x2(x.wall_ratio_p50)}</td><td>${nat ? "–" : `${x.faster_than_native} of ${x.n}`}</td><td class="nw">${a === "blackmagic" ? `${usd(x.cost_lo_p50)}–${usd(x.cost_hi_p50)}` : usd(x.cost_p50)}</td><td>${nat ? "–" : x2(x.cost_ratio_p50)}</td><td>${nat ? "–" : `${x.cheaper_than_native} of ${x.n}`}</td><td>${n0(x.out_p50)}</td><td>${x.cache_share_p50 == null ? "not logged" : pct(x.cache_share_p50)}</td><td>${k(x.after_p50)}</td><td>${x.q_total} / ${x.q_max}</td></tr>`; };
+$("t-sum").innerHTML = `<table><tr><th>method</th><th>wall p50</th><th>× native</th><th>faster</th><th>cost p50</th><th>× native</th><th>cheaper</th><th>output p50</th><th>read from cache</th><th>context after p50</th><th>recall points</th></tr>` +
+  ["sonnet", "sol"].map((m) => `<tr class="grp"><td colspan="11" class="m">${MODEL[m]} · ${ROUTE[m]} · no compaction scores ${S.models[m].control.q_total} / ${S.models[m].control.q_max}</td></tr>` + Object.keys(S.models[m].arms).map((a) => sumRow(m, a)).join("")).join("") + `</table>`;
+$("n-sum").textContent = `Wall: trigger sent to compaction end, as the agent experiences it; for summary and keepset this includes the in-session handoff turn. Cost: list price per token (both routes are subscriptions), for the compaction's model calls only. Blackmagic logs input without a cache split, so its cost is a range from all-cached to none-cached, and its ratio uses the midpoint. "Faster" and "cheaper" count slices that beat native. Context after: input of the probe request, the first request on the compacted context. Recall points: judge points summed over slices (next action is scored only where the original session shows one).`;
+
+// ---- time
+const pts = (m, f) => ROWS.filter((r) => r.model === m).map((r) => ({ x: f(r), y: r.wall_s, c: COLOR[r.arm], s: m === "sol" ? "tri" : "dot", t: `${ARM[r.arm]} · ${MODEL[r.model]} · ${r.slice}\nbefore ${n0(r.before)} · out ${n0(r.c_out)} · wall ${r.wall_s.toFixed(1)} s` }));
+const fast = ROWS.filter((r) => r.model === "sonnet" && r.arm !== "native" && r.wall_s < 15);
+$("h-time").textContent = "Wall time is output length over decode speed. Context size barely moves it.";
+$("p-time").textContent = `One line per model fits all methods: ${MODEL.sonnet} wall ≈ ${SO.fit_wall_out.a.toFixed(1)} s + ${SO.fit_wall_out.b.toFixed(1)} s per 1k output tokens (R² ${SO.fit_wall_out.r2.toFixed(2)}, ${n0(1000 / SO.fit_wall_out.b)} tok/s), ${MODEL.sol} ≈ ${SL.fit_wall_out.a.toFixed(1)} s + ${SL.fit_wall_out.b.toFixed(1)} s per 1k (R² ${SL.fit_wall_out.r2.toFixed(2)}, ${n0(1000 / SL.fit_wall_out.b)} tok/s). Against context size the R² is ${SO.fit_wall_before.r2.toFixed(2)} and ${SL.fit_wall_before.r2.toFixed(2)}. The next section measures what context size and caching do contribute. A method waits less mainly when it writes less. Output length varies more by slice and model than by method: ${fast.length} of ${ROWS.filter((r) => r.model === "sonnet" && r.arm !== "native").length} Sonnet in-session runs (${[...new Set(fast.map((r) => r.slice))].join(", ")}) wrote ${n0(Math.min(...fast.map((r) => r.c_out)))}–${n0(Math.max(...fast.map((r) => r.c_out)))} tokens and finished in ${Math.min(...fast.map((r) => r.wall_s)).toFixed(0)}–${Math.max(...fast.map((r) => r.wall_s)).toFixed(0)} s.`;
+$("key").innerHTML = Object.keys(SL.arms).map((a) => `${dot(a)}${ARM[a]}`).join(" ") + ` <span style="margin-left:14px">● ${MODEL.sonnet}  ▲ ${MODEL.sol}</span>`;
+
+function scatter(el, ps, xl, yl, { w = 540, h = 320, xmax, ymax, lines = [] } = {}) {
+  const L = 48, B = 34, T = 8, R = 10;
+  xmax ??= Math.max(...ps.map((p) => p.x)) * 1.05; ymax ??= Math.max(...ps.map((p) => p.y)) * 1.08;
+  const X = (x) => L + (x / xmax) * (w - L - R), Y = (y) => h - B - (y / ymax) * (h - B - T);
+  const ticks = (m) => { const st = Math.pow(10, Math.floor(Math.log10(m / 4))); const c = [1, 2, 5].map((f) => f * st).find((s) => m / s <= 6) ?? 10 * st; return Array.from({ length: Math.floor(m / c) + 1 }, (_, i) => +(i * c).toFixed(6)); };
+  let s = `<svg width="${w}" height="${h}">`;
+  for (const t of ticks(xmax)) s += `<line class="ax" x1="${X(t)}" x2="${X(t)}" y1="${T}" y2="${h - B}"/><text class="m" x="${X(t)}" y="${h - B + 14}" text-anchor="middle">${t}</text>`;
+  for (const t of ticks(ymax)) s += `<line class="ax" x1="${L}" x2="${w - R}" y1="${Y(t)}" y2="${Y(t)}"/><text class="m" x="${L - 6}" y="${Y(t) + 4}" text-anchor="end">${t}</text>`;
+  s += `<text class="m" x="${(L + w) / 2}" y="${h - 4}" text-anchor="middle">${xl}</text><text class="m" transform="translate(11 ${(h - B) / 2}) rotate(-90)" text-anchor="middle">${yl}</text>`;
+  for (const l of lines) { const x1 = Math.min(xmax, (ymax - l.a) / l.b > 0 ? Math.min(xmax, (ymax - l.a) / l.b) : xmax); const xl = 0.8 * x1; s += `<line x1="${X(0)}" y1="${Y(l.a)}" x2="${X(x1)}" y2="${Y(l.a + l.b * x1)}" stroke="var(--mute)" stroke-dasharray="3 3"/><text class="m" x="${X(xl) + 8}" y="${Y(l.a + l.b * xl) + 4}">${l.label}</text>`; }
+  for (const p of ps) { const cx = X(p.x), cy = Y(p.y);
+    s += p.s === "tri" ? `<path d="M${cx.toFixed(1)},${(cy - 4.2).toFixed(1)} l4,7 h-8 z" fill="${p.c}" fill-opacity="0.8"><title>${esc(p.t)}</title></path>` : `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="3.4" fill="${p.c}" fill-opacity="0.8"><title>${esc(p.t)}</title></circle>`; }
+  el.innerHTML = s + "</svg>";
+}
+const all = [...pts("sonnet", (r) => r.c_out / 1000), ...pts("sol", (r) => r.c_out / 1000)];
+scatter($("sc-out"), all, "compaction output (k tokens)", "wall time (s)", { lines: [{ ...SO.fit_wall_out, label: MODEL.sonnet }, { ...SL.fit_wall_out, label: MODEL.sol }] });
+scatter($("sc-before"), [...pts("sonnet", (r) => r.before / 1000), ...pts("sol", (r) => r.before / 1000)], "context before compaction (k tokens)", "wall time (s)");
+$("n-time").textContent = `Each mark is one compaction; dashed lines are the per-model least-squares fits. Output counts all compaction calls: for native, its summarizer requests; for blackmagic, the remote compaction's output; for summary and keepset, the handoff turn (thinking included). Hover a mark for its slice.`;
+
+// ---- where the wait goes
+function bars(el, groups, { w = 560, row = 17 } = {}) {
+  // groups: [{label, items:[{label, color, parts:[{v, fill, opacity}]}]}]; horizontal stacked bars, seconds.
+  const L = 262, R = 56, T = 6, xmax = Math.max(...groups.flatMap((g) => g.items.map((i) => i.parts.reduce((s, p) => s + p.v, 0)))) * 1.05;
+  const n = groups.reduce((s, g) => s + g.items.length + 1, 0), h = T + n * row + 34;
+  const X = (x) => L + (x / xmax) * (w - L - R);
+  let s = `<svg width="${w}" height="${h}">`, y = T;
+  for (const t of [0, 20, 40, 60, 80, 100, 120].filter((t) => t <= xmax)) s += `<line class="ax" x1="${X(t)}" x2="${X(t)}" y1="${T}" y2="${h - 30}"/><text class="m" x="${X(t)}" y="${h - 16}" text-anchor="middle">${t}</text>`;
+  s += `<text class="m" x="${(L + w) / 2}" y="${h - 2}" text-anchor="middle">wall time p50 (s)</text>`;
+  for (const g of groups) {
+    s += `<text class="m" x="0" y="${y + row * 0.7}">${g.label}</text>`; y += row;
+    for (const it of g.items) {
+      let x = 0;
+      s += `<circle cx="10" cy="${y + row / 2 - 1}" r="4" fill="${it.color}"/><text x="20" y="${y + row * 0.7}">${it.label}</text>`;
+      for (const p of it.parts) { s += `<rect x="${X(x)}" y="${y + 2}" width="${Math.max(0, X(x + p.v) - X(x))}" height="${row - 5}" fill="${p.fill}" fill-opacity="${p.opacity}"><title>${esc(p.t)}</title></rect>`; x += p.v; }
+      s += `<text class="m" x="${X(x) + 4}" y="${y + row * 0.7}">${it.note}</text>`;
+      y += row;
+    }
+  }
+  el.innerHTML = s + "</svg>";
+}
+const decArms = (m) => Object.keys(S.models[m].arms);
+const shareRange = (arms) => { const xs = ["sonnet", "sol"].flatMap((m) => decArms(m).filter((a) => arms.includes(a)).map((a) => TM.arms[m][a].share_p50)); return [Math.min(...xs), Math.max(...xs)]; };
+const [shLo, shHi] = shareRange(["native", "blackmagic", "summary", "keepset", "summaryc", "keepsetc"]);
+const PF = TM.prefill, RG = TM.regress;
+const at = (m, kTok) => PF[m].cold.a + PF[m].cold.b * kTok;
+$("h-dec").textContent = `Decoding is ${pct(shLo)}–${pct(shHi)} of the wait. Prefill is real but a few seconds at most.`;
+$("p-dec").textContent = `Each compaction splits into time before the first visible token (queueing, prefill, hidden reasoning) and decoding. On ${MODEL.sonnet} the Magpie ledger records both per request; on ${MODEL.sol} the pi stream events give them for the in-session methods. Decoding takes the median ${pct(shLo)}–${pct(shHi)} of the wall time for every method. Native waits longest before its first token (${TM.arms.sonnet.native.first_p50.toFixed(1)} s on ${MODEL.sonnet} against ${TM.arms.sonnet.keepset.first_p50.toFixed(1)} s for keepset), because it makes two requests in sequence and neither reads the cache. A separate probe measured prefill directly: thinking off, a two-token reply, first uncached and then cached on the same slice. Uncached, the first token took ${at("sonnet", 0).toFixed(1)} s + ${(100 * PF.sonnet.cold.b).toFixed(1)} s per 100k tokens on ${MODEL.sonnet} and ${at("sol", 0).toFixed(1)} s + ${(100 * PF.sol.cold.b).toFixed(1)} s per 100k on ${MODEL.sol}; cached, ${PF.sonnet.warm_p50.toFixed(1)} s and ${PF.sol.warm_p50.toFixed(1)} s at any size. So a cache hit saves up to about ${(at("sonnet", 270) - PF.sonnet.warm_p50).toFixed(0)} s at 270k. Native sends only ${k(1000 * RG.sonnet.unc_p50.native)} uncached tokens (p50), because it summarizes a serialized history with tool output cut; at that size an uncached request reaches its first token in about ${at("sonnet", RG.sonnet.unc_p50.native).toFixed(1)} s against ${PF.sonnet.warm_p50.toFixed(1)} s cached. One extra 1k tokens of output costs ${SO.fit_wall_out.b.toFixed(1)} s on ${MODEL.sonnet} and ${SL.fit_wall_out.b.toFixed(1)} s on ${MODEL.sol}. Adding input size to the wall-time fit moves R² only from ${RG.sonnet.out.r2.toFixed(3)} to ${RG.sonnet.out_unc.r2.toFixed(3)} and from ${RG.sol.out.r2.toFixed(3)} to ${RG.sol.out_unc.r2.toFixed(3)}, and the input coefficient comes out negative: across compactions the fit cannot see prefill at all, because a few seconds of prefill is smaller than the run-to-run scatter around the output line (${RG.sonnet.out.rmse.toFixed(1)} s and ${RG.sol.out.rmse.toFixed(1)} s). The direct probe is the measure of prefill. Other factors exist, then; decoding is large enough to hide them, and the methods differ in wait mainly through how much they write.`;
+bars($("b-dec"), ["sonnet", "sol"].map((m) => ({ label: MODEL[m], items: decArms(m).map((a) => { const x = TM.arms[m][a];
+  return { label: ARM[a], color: COLOR[a], note: `${pct(x.share_p50)}${x.src === "estimated" ? " est." : ""}`, parts: [
+    { v: x.first_p50, fill: COLOR[a], opacity: 0.35, t: `before first token p50 ${x.first_p50.toFixed(1)} s (${x.src})` },
+    { v: x.decode_p50, fill: COLOR[a], opacity: 0.9, t: `decoding p50 ${x.decode_p50.toFixed(1)} s` }] }; }) })));
+scatter($("sc-prefill"), ["sonnet", "sol"].flatMap((m) => PF[m].points.map((p) => ({ x: p.ctx / 1000, y: p.ttft, c: p.label === "cold" ? "#1d1d1b" : "#a8a59c", s: m === "sol" ? "tri" : "dot", t: `${MODEL[m]} · ${p.slice} · ${p.label}\ncontext ${n0(p.ctx)} · first token ${p.ttft.toFixed(2)} s` }))),
+  "context (k tokens)", "time to first token (s)", { w: 540, h: 300, lines: [{ a: PF.sonnet.cold.a, b: PF.sonnet.cold.b, label: "uncached, Sonnet" }, { a: PF.sol.cold.a, b: PF.sol.cold.b, label: "uncached, Sol" }] });
+const regRow = (m, key, label) => { const f = RG[m][key], c = f.coef; return `<tr><td>${MODEL[m]}</td><td class="l">${label}</td><td>${f.r2.toFixed(3)}</td><td>${f.rmse.toFixed(1)} s</td><td>${c[1].toFixed(1)} s</td><td>${c.length > 2 ? (100 * c[2]).toFixed(1) + " s" : "–"}</td><td>${c.length > 3 ? (100 * c[3]).toFixed(1) + " s" : "–"}</td></tr>`; };
+$("t-reg").innerHTML = `<table><tr><th>model</th><th class="l">wall time fitted on</th><th>R²</th><th>RMSE</th><th>per 1k output</th><th>per 100k uncached input</th><th>per 100k cached input</th></tr>` +
+  ["sonnet", "sol"].map((m) => regRow(m, "out", "output") + regRow(m, "out_unc", "output + uncached input") + regRow(m, "out_unc_cr", "output + uncached + cached input")).join("") + `</table>`;
+$("n-dec").textContent = `Left: median time before the first visible token (light) and decoding (dark) per method; the label is decoding's median share of each run's wall time. Neither route streams reasoning, so hidden reasoning counts as time before the first token. ${MODEL.sol} native and blackmagic expose no per-request timing; their split ("est.") applies the uncached prefill line to their logged input, and decoding is the rest. Right: the prefill probe, ${PF.sonnet.points.length / 2} slices per model; black marks are the first, uncached request on a slice (its usage shows no cache read beyond pi's ${n0(PF.sonnet.cold_uncached_min)}-token system prefix), grey marks the same request again, cached. Table: least squares over all ${RG.sonnet.n + RG.sol.n} compactions. The negative input coefficients do not mean input speeds a request up; they absorb noise and differences between methods that output does not capture.`;
+
+// ---- cost
+$("h-cost").textContent = "Native pays for the whole history again; the in-session methods read it from cache";
+$("p-cost").textContent = `Native sends a new summarizer prompt, so its cost grows with context: ${usd(A("sonnet", "native").fit_cost_before.b)} per 100k tokens of context on ${MODEL.sonnet} and ${usd(A("sol", "native").fit_cost_before.b)} on ${MODEL.sol}. The in-session methods continue the cached session: their input is a cache read at a tenth of the input price or less, so their cost grows by ${usd(A("sonnet", "keepset").fit_cost_before.b)}–${usd(A("sonnet", "summary").fit_cost_before.b)} (Sonnet) and ${usd(A("sol", "summary").fit_cost_before.b)}–${usd(A("sol", "keepset").fit_cost_before.b)} (Sol) per 100k, and output dominates it. Blackmagic sends the whole context to the remote endpoint; with an unknown cache split its midpoint cost grows by ${usd(A("sol", "blackmagic").fit_cost_before.b)} per 100k. At these list prices one native compaction at 250–300k context costs ${usd(Math.max(...ROWS.filter((r) => r.arm === "native" && r.tier >= 250000).map((r) => r.cost_mid)))} at most.`;
+scatter($("sc-cost"), ROWS.map((r) => ({ x: r.before / 1000, y: r.cost_mid, c: COLOR[r.arm], s: r.model === "sol" ? "tri" : "dot", t: `${ARM[r.arm]} · ${MODEL[r.model]} · ${r.slice}\nbefore ${n0(r.before)} · cost ${usd(r.cost_mid)}` })), "context before compaction (k tokens)", "compaction cost (USD, list)", { ymax: 0.55 });
+$("t-cost").innerHTML = `<table><tr><th>method</th><th>model</th><th>$ per 100k context</th><th>R²</th></tr>` + ["sonnet", "sol"].flatMap((m) => Object.entries(S.models[m].arms).map(([a, x]) => `<tr><td>${dot(a)}${ARM[a]}</td><td>${m}</td><td>${usd(x.fit_cost_before.b)}</td><td>${x.fit_cost_before.r2.toFixed(2)}</td></tr>`)).join("") + `</table>`;
+$("n-cost").textContent = `Cost = compaction calls only, at list price: ${MODEL.sonnet} $2 input, $10 output, $0.20 cache read, $2.50 cache write per Mtok; ${MODEL.sol} $2, $10, $0.10 cache read. Sonnet through Magpie reports cache writes, so native's fresh prompt is priced as a cache write. The warm-up turn before compaction is common to all methods and not counted. Blackmagic marks use the midpoint of its cost range.`;
+
+// ---- context after and carry
+$("h-after").textContent = "Keepset on Sol keeps twice the context of native; that costs back the saving only after dozens of calls";
+const ks = A("sol", "keepset"), kn = A("sonnet", "keepset");
+$("p-after").textContent = `Every later request reads the context that compaction leaves, so a larger leftover costs a little on each call and brings the next compaction sooner. On ${MODEL.sol} keepset kept ${n0(ks.kept_rounds_p50)} tool rounds (${k(ks.kept_tokens_p50)} tokens, p50) and left ${k(ks.after_p50)}, against ${k(A("sol", "native").after_p50)} for native. At the cache-read price that adds ${usd(100 * ks.extra_carry_p50)} per 100 later calls against a ${usd(ks.saving_p50)} saving at compaction (medians over slices). On ${MODEL.sonnet} the model chose to keep little: ${n0(kn.kept_rounds_p50)} rounds, ${k(kn.kept_tokens_p50)} tokens; its leftover matches native's. Native keeps the most recent ~20k tokens of raw history plus its summary; blackmagic keeps recent user messages and an opaque window.`;
+$("t-after").innerHTML = `<table><tr><th>method</th><th>model</th><th>context before p50</th><th>context after p50</th><th>after / before</th><th>kept rounds p50</th><th>kept tokens p50</th><th>saving vs native p50</th><th>extra per 100 later calls p50</th><th>later calls to cost the saving back</th></tr>` +
+  ["sonnet", "sol"].flatMap((m) => Object.entries(S.models[m].arms).map(([a, x]) => { const rs = ROWS.filter((r) => r.model === m && r.arm === a);
+    const be = a === "native" ? "–" : x.saving_p50 <= 0 ? "never saves" : x.extra_carry_p50 <= 0 ? "never (leaves less)" : n0(x.saving_p50 / x.extra_carry_p50);
+    return `<tr><td>${dot(a)}${ARM[a]}</td><td>${m}</td><td>${k(rs.map((r) => r.before).sort((p, q) => p - q)[rs.length >> 1])}</td><td>${k(x.after_p50)}</td><td>${pct(x.after_share_p50)}</td><td>${x.kept_rounds_p50 == null ? "–" : n0(x.kept_rounds_p50)}</td><td>${x.kept_tokens_p50 == null ? "–" : k(x.kept_tokens_p50)}</td><td>${a === "native" ? "–" : usd(x.saving_p50)}</td><td>${a === "native" ? "–" : (x.extra_carry_p50 >= 0 ? "+" : "−") + usd(Math.abs(100 * x.extra_carry_p50))}</td><td>${be}</td></tr>`; })).join("") + `</table>`;
+function cdf(el, m) {
+  const w = 540, h = 260, L = 48, B = 34, T = 18, R = 10;
+  const rs = ROWS.filter((r) => r.model === m), xmax = Math.ceil(Math.max(...ROWS.map((r) => r.after)) / 10000) * 10;
+  const X = (x) => L + (x / xmax) * (w - L - R), Y = (y) => h - B - y * (h - B - T);
+  let s = `<svg width="${w}" height="${h}"><text x="${L}" y="11">${MODEL[m]}</text>`;
+  for (let t = 0; t <= xmax; t += 10) s += `<line class="ax" x1="${X(t)}" x2="${X(t)}" y1="${T}" y2="${h - B}"/><text class="m" x="${X(t)}" y="${h - B + 14}" text-anchor="middle">${t}</text>`;
+  for (const t of [0, 0.5, 1]) s += `<line class="ax" x1="${L}" x2="${w - R}" y1="${Y(t)}" y2="${Y(t)}"/><text class="m" x="${L - 6}" y="${Y(t) + 4}" text-anchor="end">${t}</text>`;
+  s += `<text class="m" x="${(L + w) / 2}" y="${h - 4}" text-anchor="middle">context after compaction (k tokens)</text><text class="m" transform="translate(11 ${(h - B) / 2}) rotate(-90)" text-anchor="middle">share of slices ≤ x</text>`;
+  for (const a of Object.keys(S.models[m].arms)) {
+    const xs = rs.filter((r) => r.arm === a).map((r) => [r.after / 1000, r.slice]).sort((p, q) => p[0] - q[0]);
+    let d = `M${X(0)},${Y(0)}`;
+    xs.forEach(([x], i) => { d += ` H${X(x).toFixed(1)} V${Y((i + 1) / xs.length).toFixed(1)}`; });
+    s += `<path d="${d}" fill="none" stroke="${COLOR[a]}" stroke-width="1.6" stroke-opacity="0.85"/>`;
+    xs.forEach(([x, sl], i) => { s += `<circle cx="${X(x).toFixed(1)}" cy="${Y((i + 1) / xs.length).toFixed(1)}" r="2.6" fill="${COLOR[a]}"><title>${esc(`${ARM[a]} · ${sl} · after ${n0(1000 * x)}`)}</title></circle>`; });
+  }
+  el.innerHTML = s + "</svg>";
+}
+$("key-after").innerHTML = Object.keys(SL.arms).map((a) => `${dot(a)}${ARM[a]}`).join(" ");
+cdf($("cdf-sonnet"), "sonnet"); cdf($("cdf-sol"), "sol");
+$("n-after").textContent = `Curves: cumulative distribution of context after compaction over the ${nSlices} slices of each model, one curve per method; a curve further right leaves more context. Hover a mark for its slice. `+ `Extra per 100 later calls = 100 × (context after − native's context after) × cache-read price, per slice. Later calls to cost the saving back = median saving ÷ median extra per call; it ignores that a larger leftover also triggers the next compaction sooner. Kept rounds and tokens come from the keepset compaction details; in-session summary keeps none by design. The summary text of both in-session methods sits in the compaction entry, and its rarebit receipts point to saved tool output.`;
+
+// ---- quality
+const ja = S.judge_agreement;
+$("h-q").textContent = "In-session recall fell because the record dropped harness-delivered instructions; keeping them restores the task and latest instruction";
+$("p-q").textContent = `After compaction the agent answered three questions from context: its task and latest instruction (REQUEST), its next action (NEXT), and three facts that action depends on (FACTS). A blind claude-opus-5-5 judge scored each 0–2 against the original session record, in two independent passes; scores below average both passes. In principle an in-session compaction should recall at least as much as native: the agent writes its note with the whole context in view. In the first runs the in-session methods still scored lower on REQUEST (${f2(MX.summary.request)} and ${f2(MX.keepset.request)} per slice against ${f2(MX.native.request)} for native). The record behind them explains it. The handoff prompt tells the agent that user messages are "kept automatically and verbatim" and asks it not to restate them. The record keeps only user and assistant messages. The ${S.mechanism.slices} slices come from pi-team Worker sessions, which receive their tasks and inbox messages as harness messages (custom_message entries) and contain ${S.mechanism.user_messages} user messages in total. So the agent left the instruction out of its note, and compaction then dropped it. In ${MX.summary.record_only_warmup + MX.keepset.record_only_warmup} of ${MX.summary.n + MX.keepset.n} in-session compactions the only user message left in the record was this benchmark's own warm-up prompt, and ${MX.summary.named_checkpoint + MX.keepset.named_checkpoint} answers named that prompt as the latest instruction. Native's separate summarizer reads every message, harness messages included, and writes the goal and latest request into fixed sections. Rerun with harness messages kept in the record ("record fixed"), the latest instruction survived verbatim in ${MX.summaryc.present + MX.keepsetc.present} of ${MX.summaryc.n + MX.keepsetc.n} compactions and REQUEST rose to ${f2(MX.summaryc.request)} and ${f2(MX.keepsetc.request)}. NEXT and FACTS did not separate the methods. The same method compacted twice on the same slices moved NEXT by up to ${f2(Math.max(Math.abs(MX.summaryc.next - MX.summary.next), Math.abs(MX.keepsetc.next - MX.keepset.next)))} and FACTS by up to ${f2(Math.max(Math.abs(MX.summaryc.facts - MX.summary.facts), Math.abs(MX.keepsetc.facts - MX.keepset.facts)))} per slice; the fixed arms' remaining gaps to native are up to ${f2(Math.max(MX.native.next - MX.summaryc.next, MX.native.next - MX.keepsetc.next))} on NEXT and ${f2(Math.max(MX.native.facts - MX.summaryc.facts, MX.native.facts - MX.keepsetc.facts))} on FACTS.`;
+$("q-why").textContent =
+`Worker session                       record kept at in-session compaction
+  custom_message  task / inbox  -->  dropped                    <- the defect
+  user            (none in ${S.mechanism.slices} slices
+                   but the warm-up)  -->  kept verbatim
+  assistant       final replies -->  kept verbatim
+  agent's note    "do not restate user messages; they are kept"  -> instruction lives nowhere
+record fixed: custom_message kept as a user message`;
+const mxRow = (a) => { const x = MX[a]; return `<tr${a === "none" ? ' class="m"' : ""}><td>${dot(a)}${ARM[a]}</td><td>${x.n}</td><td>${a === "none" ? "–" : `${x.present} of ${x.n}`}</td><td>${a === "none" || a === "native" || a === "blackmagic" ? "–" : `${x.record_only_warmup} of ${x.n}`}</td><td>${x.named_checkpoint} of ${x.n}</td><td>${f2(x.request)}</td><td>${f2(x.next)}</td><td>${f2(x.facts)}</td><td>${f2(x.total)}</td></tr>`; };
+$("t-why").innerHTML = `<table><tr><th>method</th><th>runs</th><th>latest instruction verbatim after compaction</th><th>record holds only the warm-up as user message</th><th>answer calls the warm-up the latest instruction</th><th>REQUEST per slice</th><th>NEXT</th><th>FACTS</th><th>total</th></tr>` +
+  ["none", "native", "blackmagic", "summary", "keepset", "summaryc", "keepsetc"].map(mxRow).join("") + `</table>`;
+$("t-q").innerHTML = `<table><tr><th>method</th><th>model</th><th>REQUEST</th><th>NEXT</th><th>FACTS</th><th>total</th><th>total, judge pass 2</th><th>slices below control</th><th class="l">points per slice vs control</th></tr>` +
+  ["sonnet", "sol"].flatMap((m) => [["none", S.models[m].control], ["none", { ...S.models[m].control_rep2, rep2: true }], ...Object.entries(S.models[m].arms)].map(([a, x]) => `<tr${a === "none" ? ' class="m"' : ""}><td>${dot(a)}${ARM[a]}${x.rep2 ? ", asked again" : ""}</td><td>${m}</td><td>${x.q_request} / ${2 * x.q_n}</td><td>${x.q_next} / ${2 * x.q_next_n}</td><td>${x.q_facts} / ${2 * x.q_n}</td><td>${x.q_total} / ${x.q_max}</td><td>${x.q_total_pass2 ?? "–"}</td><td>${x.q_vs_control_lower == null ? "–" : `${x.q_vs_control_lower} of ${nSlices}`}</td><td class="l nw">${x.q_vs_control_diffs ? x.q_vs_control_diffs.map((d) => d > 0 ? "+" + d : d === 0 ? "·" : d).join(" ") : "–"}</td></tr>`)).join("") + `</table>`;
+$("n-q").innerHTML = `Ground truth per slice: the latest instruction before the cut, the last entries before the cut, and up to six actions the original agent took next. ${S.judge_null_next.length} of ${2 * nSlices} slices end just before a new instruction arrived, so NEXT has no ground truth there and is not scored. The judge sees neither the method nor the model. The first probe asked for "the user's most recent request"; ${MODEL.sol} answered with the probe itself, and the read-only tool list pushed NEXT towards "report a blocker". The probe was re-asked on every compacted session with clearer wording and the instruction to assume normal tools (probe v2, used here). The compactions were not repeated. REQUEST, NEXT and FACTS per slice average both judge passes over all slices of both models; NEXT averages over all slices and counts unscored slices as 0, so compare it only within this table. Native keeps its latest instruction verbatim only when it falls inside the ~20k-token raw tail; its summary restates it otherwise.`;
+
+// ---- limits
+$("limits").innerHTML = [
+  `One run per slice and method. Ratios are paired medians over ${nSlices} slices per model from 3 sessions; they show direction and size, not tight intervals. Runs ran one at a time per provider, in the same hour, with methods rotated across slices.`,
+  `All 3 sessions are pi-team Worker sessions (two originally on claude-fable-5-1, one on gpt-5.6-terra), chosen because they have the longest branches without compaction. Both test models replay another model's history; pi turns old thinking into text for both.`,
+  `Tiers are nominal. The same history is about 1.5× more tokens to ${MODEL.sonnet} than to ${MODEL.sol}, so slices were cut per model. ${MODEL.sol}'s window is 272k, so its top tier is 250k. One source session has no clean cut near 90k: its 90k slices are ${k(S.before_p50 && ROWS.find((r) => r.slice === "aes-sonnet-90k").before)} (Sonnet) and ${k(ROWS.find((r) => r.slice === "aes-sol-90k").before)} (Sol). Figures use the measured context.`,
+  `Tools were limited to read, grep, find and ls so replays could not touch the original repositories. The original agents had write and shell tools; the handoff turns therefore could not write durable notes as hc-auto-compact asks.`,
+  `The keepset branch's handoff and the native summarizer are at their defaults (keep budget 24k tokens; pi native keeps ~20k recent tokens). Other settings change context after and output length.`,
+  `The record fix is a local patch to the bench worktree of <code>experiment/keepset-compaction</code> (<code>KEEPSET_RAREBIT_CUSTOM=1</code>), not committed. The fixed arms are fresh compactions, so their differences from the original arms include run-to-run variation as well as the fix. The benchmark's warm-up prompt stays in every arm's history, which is why a few answers still call it the latest instruction.`,
+  `Prefill was probed once per slice with thinking off; time before the first token also includes queueing on shared capacity.`,
+  `Cost is list price; both routes are subscriptions. Blackmagic's cost is a range. The judge is a Claude model and may favour Claude-style answers; method comparisons are within one model, where that bias cancels.`,
+  `Wall time is one sample per run on shared subscription capacity. Sol's decode speed varies by day (the log study saw 27–53 tok/s), which moves all Sol times together.`,
+].map((x) => `<li>${x}</li>`).join("");
+
+$("methods").innerHTML = `<p>Code in <code>research/compaction-bench/</code>: <code>slice.py</code> cuts slices (deepest branch with no compaction; cut after a finished turn or a complete tool round, nearest the tier within 30%; sizes predicted from o200k counts calibrated on one measured request per model). <code>bench.mjs</code> runs each slice × model × method in a fresh <code>pi --mode rpc</code> with <code>--no-extensions --no-mcp</code> plus only the method's extension (<code>experiment/keepset-compaction</code> at f519d2a for summary and keepset, <code>pi-openai-blackmagic-compact</code> for blackmagic), thinking medium, auto-compaction off, <code>KEEPSET_THRESHOLD=1000</code> so only the explicit trigger compacts. <code>reprobe.mjs</code> asks probe v2 and builds the controls. <code>collect.py</code> reads each run's session file and RPC event log. <code>judge.mjs</code> scores answers. <code>analyze.py</code> computes the statistics and writes this page.</p>
+<p>Reproduce: <code>uv run --with tiktoken python -I slice.py && node bench.mjs && node reprobe.mjs && python3 -I collect.py && node judge.mjs && JUDGE_OUT=judge2.json node judge.mjs && python3 -I analyze.py</code>. Runs land in <code>runs/&lt;slice&gt;__&lt;model&gt;__&lt;method&gt;/</code> (session, events, meta); finished runs are skipped on rerun.</p>`;
+
+const SLc = D.slices;
+$("t-slices").innerHTML = `<table><tr><th>slice</th><th>session</th><th>model</th><th>tier</th><th>context measured</th><th>entries</th><th>tool calls</th></tr>` +
+  Object.entries(SLc).map(([id, s]) => `<tr><td>${id}</td><td>${s.session}</td><td>${s.model}</td><td>${k(s.tier)}</td><td>${k(ROWS.find((r) => r.slice === id)?.before)}</td><td>${s.entries}</td><td>${s.tool_calls}</td></tr>`).join("") + `</table>`;
+
+// ---- runs table
+const ALL = [...ROWS, ...CTL.map((c) => ({ ...c, arm: "none" }))];
+const COLS = [["slice", "slice"], ["arm", "method"], ["before", "before"], ["wall_s", "wall s"], ["c_out", "out"], ["cost", "cost"], ["after", "after"], ["kept_rounds", "kept rounds"], ["q", "recall R/N/F"]];
+const fmt = (c, r) => c === "arm" ? dot(r.arm) + ARM[r.arm] : c === "wall_s" ? (r.wall_s == null ? "–" : r.wall_s.toFixed(1)) : c === "cost" ? (r.cost == null ? "–" : r.arm === "blackmagic" ? `${usd(r.cost)}–${usd(r.cost_hi)}` : usd(r.cost)) :
+  c === "q" ? `<span title="${esc(r.q_note)}">${r.q_request ?? "–"}/${r.q_next ?? "–"}/${r.q_facts ?? "–"}</span>` : typeof r[c] === "number" ? n0(r[c]) : (r[c] ?? "–");
+$("filter").innerHTML = `<option value="">all</option>` + Object.keys(SLc).map((s) => `<option>${s}</option>`).join("");
+function rows() {
+  const f = $("filter").value, rs = ALL.filter((r) => !f || r.slice === f).sort((a, b) => a.slice.localeCompare(b.slice) || Object.keys(ARM).indexOf(a.arm) - Object.keys(ARM).indexOf(b.arm));
+  $("count").textContent = `${rs.length} rows`;
+  $("rows").innerHTML = `<tr>${COLS.map(([, l]) => `<th>${l}</th>`).join("")}<th class="l">probe answer</th></tr>` + rs.map((r) => `<tr>${COLS.map(([c]) => `<td>${fmt(c, r)}</td>`).join("")}<td class="l"><details><summary class="m">${esc((r.answer ?? "").split("\n").find((l) => l.trim() && !l.startsWith("#"))?.slice(0, 60))}</summary><pre>${esc(r.answer)}</pre></details></td></tr>`).join("");
+}
+$("filter").onchange = rows;
+rows();
+</script>
+</body>
+</html>

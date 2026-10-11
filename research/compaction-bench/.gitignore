@@ -1,0 +1,16 @@
+*.log
+__pycache__/
+.DS_Store
+runs/
+prefill/
+slices/*.jsonl
+# Private result bundles; existing tracked copies need a publication audit.
+slices/index.json
+rows.json
+judge*.json
+stats.json
+timing.json
+split.json
+prefill.json
+decomp.json
+report.html
