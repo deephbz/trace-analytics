@@ -13,7 +13,7 @@ import { scan } from "../src/sources/scan.mjs";
 
 const T0 = Date.parse("2026-10-10T05:00:00.000Z");
 const iso = (ms) => new Date(T0 + ms).toISOString();
-const tmp = () => mkdtempSync(join(tmpdir(), "agent-logs-"));
+const tmp = () => mkdtempSync(join(tmpdir(), "trace-analytics-"));
 const CODEX_FILE = "rollout-2026-10-10T05-00-00-00000000-0000-4000-8000-000000000001.jsonl";
 
 function piLines() {

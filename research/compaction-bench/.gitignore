@@ -4,7 +4,7 @@ __pycache__/
 runs/
 prefill/
 slices/*.jsonl
-# Private result bundles; existing tracked copies need a publication audit.
+# Private result bundles: they quote private sessions. Kept local only.
 slices/index.json
 rows.json
 judge*.json
@@ -14,3 +14,4 @@ split.json
 prefill.json
 decomp.json
 report.html
+sessions.local.json

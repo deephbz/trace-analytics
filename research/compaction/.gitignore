@@ -1,0 +1,5 @@
+# Outputs derived from private session logs. Regenerate with the command in README.md.
+compactions.jsonl
+stats.json
+totals.json
+report.html

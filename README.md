@@ -1,6 +1,6 @@
-# agent-logs
+# trace-analytics
 
-Status: exploration. The repository is still named `agent-speed`; the package is `agent-logs`.
+Status: exploration.
 
 Studies of local coding-agent logs: how fast model calls are, which prompt-cache
 retention would cost least, and what context compaction costs. All three run
@@ -31,8 +31,8 @@ the same pipeline on the same adapters.
 ## Use
 
 ```
-node bin/agent-logs.mjs <study> [since] [until] [--out dir] [--no-open] [--prices file] [--no-cache]
-node bin/agent-logs.mjs <study> [since] --serve [--port n] [--no-open]
+node bin/trace-analytics.mjs <study> [since] [until] [--out dir] [--no-open] [--prices file] [--no-cache]
+node bin/trace-analytics.mjs <study> [since] --serve [--port n] [--no-open]
 ```
 
 | Study | Question | Default window | Sources | Files |
@@ -82,7 +82,7 @@ Each adapter's header comment holds its rules. Points that cross adapters:
   transcripts (`*magpie-c*` project dirs) are skipped; the ledger has those calls.
 - **Incremental scan.** Agents append to session files, so `scan.mjs` reads only
   the bytes written since the last run, with the adapter's saved state. The cache
-  (`~/.cache/agent-speed/<adapter>.json`) is keyed by a hash of the code, so a code
+  (`~/.cache/trace-analytics/<adapter>.json`) is keyed by a hash of the code, so a code
   change rebuilds it. Warm: 0.3 s for 14 days (76k calls).
 
 Known limits:
@@ -152,7 +152,8 @@ retention beyond the nominal TTL.
 `src/analytics/compaction.mjs` derives one row per compaction (request tokens,
 wall time, cost, the context the next request carried, hc-auto-compact handoff
 turns) and the ordinary calls of each population as denominators.
-`research/compaction/` holds the findings: run with `--out research/compaction`.
+`research/compaction/` holds the study's notes; run with `--out research/compaction`.
+Its outputs derive from private session logs and stay out of git (`.gitignore`).
 
 - Claude Code logs no usage for its summary request: output is estimated from
   the summary's length (3.6 characters per token), and the history counts as

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// agent-logs <study> [since] [until] [--out dir] [--no-open] [--prices file] [--no-cache]
+// trace-analytics <study> [since] [until] [--out dir] [--no-open] [--prices file] [--no-cache]
 //   Prints the study's text report and writes its files to <out>.
-// agent-logs <study> [since] --serve [--port n] [--no-open] [--prices file]
+// trace-analytics <study> [since] --serve [--port n] [--no-open] [--prices file]
 //   Live view: the page reads a result rebuilt on request; `until` is always now.
 //
 // study: speed | cache-ttl | compaction
@@ -43,7 +43,7 @@ const opt = (name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : unde
 const pos = argv.filter((a, i) => !a.startsWith("--") && !VALUED.includes(argv[i - 1]));
 const name = pos[0];
 if (!STUDIES[name]) {
-  console.error(`usage: agent-logs <${Object.keys(STUDIES).join("|")}> [since] [until] [--out dir] [--serve] [--port n] [--no-open] [--prices file] [--no-cache]`);
+  console.error(`usage: trace-analytics <${Object.keys(STUDIES).join("|")}> [since] [until] [--out dir] [--serve] [--port n] [--no-open] [--prices file] [--no-cache]`);
   for (const [k, s] of Object.entries(STUDIES)) console.error(`  ${k.padEnd(11)} ${s.title} (default since ${s.defaultSince})`);
   process.exit(2);
 }

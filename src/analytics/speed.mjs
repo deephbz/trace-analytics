@@ -263,7 +263,7 @@ export function analyzeSpeed({ window, calls, coverage }, { codeVersion } = {}) 
   }
   const perSource = (name) => rows.filter((r) => r.source === name).length;
   return {
-    kind: "agent-logs/speed",
+    kind: "trace-analytics/speed",
     generatedAt: new Date().toISOString(),
     window: { since: new Date(sinceMs).toISOString(), until: new Date(untilMs).toISOString() },
     codeVersion,

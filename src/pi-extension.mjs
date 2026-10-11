@@ -1,6 +1,6 @@
 // Pi extension: /ttl-backtest [since] [until] [--prices file] [--no-serve] [--no-open]
 // Runs the cache-ttl study with the live model registry's prices, and snapshots that
-// catalog so the CLI (bin/agent-logs.mjs) prices the same way offline.
+// catalog so the CLI (bin/trace-analytics.mjs) prices the same way offline.
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -31,7 +31,7 @@ async function parseArgs(s) {
   return o;
 }
 
-export default function agentLogs(pi) {
+export default function traceAnalytics(pi) {
   let active = null;
   const close = () => {
     active?.server.close();

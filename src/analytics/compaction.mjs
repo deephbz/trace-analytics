@@ -405,5 +405,5 @@ export function analyzeCompaction(data, resolve) {
     if (c.skipped?.inheritedCompaction) bump(dropped, `${h}: compactions inherited by a forked thread`, c.skipped.inheritedCompaction);
   }
   stats.dropped = dropped;
-  return { kind: "agent-logs/compaction", stats, rows, totals: totals.totals, ordinaryDecode: totals.ordinaryDecode };
+  return { kind: "trace-analytics/compaction", stats, rows, totals: totals.totals, ordinaryDecode: totals.ordinaryDecode };
 }

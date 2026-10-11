@@ -6,7 +6,7 @@ carried. `report.html` holds the findings; this file explains how the data
 is made.
 
 ```
-agent-logs compaction ──► compactions.jsonl   one row per compaction
+trace-analytics compaction ──► compactions.jsonl   one row per compaction
                      ├──► totals.json         ordinary model calls per population (denominators),
                      │                        exclusions, ordinary decode speed per model
                      ├──► stats.json          profiles, shares, fits, factors
@@ -16,11 +16,13 @@ agent-logs compaction ──► compactions.jsonl   one row per compaction
 Run from the repository root:
 
 ```sh
-node bin/agent-logs.mjs compaction 2026-09-13T10:08:20Z 2026-10-11T10:08:20Z --out research/compaction
+node bin/trace-analytics.mjs compaction 2026-09-13T10:08:20Z 2026-10-11T10:08:20Z --out research/compaction
 ```
 
 The derivations live in `src/analytics/compaction.mjs`; the record fields they
-read are defined in `src/record.mjs`. The files here cover 2026-09-13T10:08Z to
+read are defined in `src/record.mjs`. The outputs hold per-session rows from
+private logs, so they are generated locally and ignored by git. The findings in
+`src/reports/compaction/page.html` were written for 2026-09-13T10:08Z to
 2026-10-11T10:08Z.
 
 ## Sources and field semantics

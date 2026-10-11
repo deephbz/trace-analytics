@@ -25,11 +25,10 @@ from tok import ENC, tokens
 
 HOME = os.path.expanduser("~")
 HERE = os.path.dirname(os.path.abspath(__file__))
-SESSIONS = {
-    "project-a": "<local-session-file>",            # claude-fable-5-1
-    "aes": "<local-session-file>",   # claude-fable-5-1
-    "hc": "<local-session-file>",       # gpt-5.6-terra
-}
+# Session selectors: label -> "<pi session dir>/<file name prefix>". They name private
+# sessions, so they live in a local file next to this one (sessions.local.json, gitignored).
+SESSIONS_FILE = os.path.join(HERE, "sessions.local.json")
+SESSIONS = json.load(open(SESSIONS_FILE)) if os.path.exists(SESSIONS_FILE) else {}
 SYSTEM = 3300
 SCALE = {"sonnet": 1.75, "sol": 1.12}
 TIERS = {"sonnet": [90_000, 200_000, 300_000], "sol": [90_000, 200_000, 250_000]}

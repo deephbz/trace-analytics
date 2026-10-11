@@ -1,15 +1,15 @@
 {
-  "name": "agent-logs",
+  "name": "trace-analytics",
   "version": "0.2.0",
   "private": true,
   "description": "Studies of local coding-agent logs (pi, Codex, Claude Code, Magpie gateway): call speed, prompt-cache TTL, context compaction.",
   "type": "module",
-  "bin": { "agent-logs": "./bin/agent-logs.mjs" },
+  "bin": { "trace-analytics": "./bin/trace-analytics.mjs" },
   "pi": { "extensions": ["./src/pi-extension.mjs"] },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "speed": "node bin/agent-logs.mjs speed",
-    "cache-ttl": "node bin/agent-logs.mjs cache-ttl",
-    "compaction": "node bin/agent-logs.mjs compaction"
+    "speed": "node bin/trace-analytics.mjs speed",
+    "cache-ttl": "node bin/trace-analytics.mjs cache-ttl",
+    "compaction": "node bin/trace-analytics.mjs compaction"
   }
 }

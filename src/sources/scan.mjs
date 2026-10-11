@@ -22,7 +22,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const CACHE_DIR = join(homedir(), ".cache", "agent-speed");
+export const CACHE_DIR = join(homedir(), ".cache", "trace-analytics");
 const HEAD_BYTES = 64;
 const CHUNK = 1 << 20;
 
