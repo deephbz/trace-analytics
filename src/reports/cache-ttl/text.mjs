@@ -12,6 +12,7 @@ export function cacheTtlPayload(bt, { catalogSource } = {}) {
     models: t.models,
     prices: bt.prices,
     catalogSource,
+    conditional: bt.conditional ? (({scored,model,...summary})=>summary)(bt.conditional) : null,
     scenarios: SCENARIOS,
     policies: POLICIES,
     rows: t.rows,
@@ -44,5 +45,11 @@ export function cacheTtlText(bt) {
   const est = t.models.filter((_, m) => bt.prep.group[m] && !bt.prep.reported[m]);
   if (est.length) lines.push("", `Estimated writes (route logs no cacheWrite; uncached input priced as writes): ${mtok(bt.repriced.estWrite)} tokens on ${est.join(", ")}`);
   if (cov.unpriced) lines.push(`Unpriced in-scope models (excluded): ${Object.keys(cov.unpricedModels).join(", ")}`);
+  if (bt.conditional) {
+    const c=bt.conditional;
+    lines.push('', `Conditional cold-write model: ${c.train} train / ${c.test} held-out; ${c.censored} right-censored; ${c.unpriced} unpriced.`,
+      `Brier conditional / pooled: ${c.mean.brierConditional?.toFixed(4)??'n/a'} / ${c.mean.brierPooled?.toFixed(4)??'n/a'}.`,c.recommendation,
+      'This bounded next-access objective does not replace the full static replay or establish Cache Goblin lifetime savings.');
+  }
   return lines.join("\n");
 }

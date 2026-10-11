@@ -20,6 +20,7 @@
 //   compaction  id of the compaction when reset is "compaction"; null otherwise
 //   cause       the input this request answers: "user", "tool", "compaction", "other";
 //               null when unknown
+//   inputAt     last explicit input entry time on this branch; null if unavailable
 //   purpose     "turn" (a conversation request), "compaction" (a summarizer or remote
 //               compaction request), "side" (outside the conversation path); null when unknown
 //   route       "provider/model" as the source names it
@@ -41,6 +42,18 @@
 //   reasoning   reasoning tokens inside `out`; null when unknown
 //   stop        stop reason; null when unknown
 //   cost        USD the harness logged at request time; null when not logged
+//
+// TOOL: one tool result (Pi) or completed tool item (Codex).
+//   source, session, id: owning source and result entry identity
+//   call: requesting assistant call id, or null when its record is missing
+//   name: logged tool name; no arguments or output content
+//   t, end: response-end to result-entry interval when available; otherwise end only
+//   duration: ms between these anchors, or null (never a configured timeout)
+//   timing: "response-to-result-proxy" includes execution plus scheduling/overhead;
+//           "execution-events" uses Codex item start/end events;
+//           "unknown" has no start. Parallel intervals can overlap.
+//   outcome: success | failure | timeout | cancelled | unknown, from logged status.
+//            success describes tool-wrapper completion, not success of nested jobs.
 //
 // COMPACTION: one context compaction.
 //   source, session, role   as for a call

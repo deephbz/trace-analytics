@@ -57,6 +57,8 @@
     <span class="routes" id="routes" style="margin-left:auto"></span>
   </div>
   <div id="err"></div>
+  <section class="card" id="prefix-demo" style="margin-bottom:16px"></section>
+  <section class="card" id="conditional" style="margin-bottom:16px"></section>
 
   <section class="card">
     <h2 id="verdict-title">Which TTL would have cost least, per route</h2>
@@ -66,8 +68,8 @@
   </section>
 
   <section class="card" style="margin-top:16px">
-    <h2>A TTL is a ruler laid against each idle gap</h2>
-    <p class="sub">Turns of one conversation on one model. Each turn can reuse the prompt of the turn before it. If the gap is within the TTL, that prefix is a cache read; otherwise the turn rewrites it.</p>
+    <h2>A TTL is a ruler laid against each request-start gap</h2>
+    <p class="sub">Requests of one conversation on one model. The gap is start-to-start, including the earlier response, tool waiting, and other delays; it is not pure idle time. Each request can reuse its predecessor's prefix. If the gap is within the TTL, that prefix is a cache read; otherwise the turn rewrites it.</p>
     <div id="ruler"></div>
   </section>
 
@@ -104,8 +106,11 @@
 window.addEventListener("error", (e) => { document.getElementById("err").textContent = `Page error: ${e.message}`; });
 import { prepare, requestCosts, actualRepriced, coverage, ttlCostModel, COL } from "/sim.mjs";
 import { familyOf, ROUTE_CONTROL } from "/policies.mjs";
+import { renderConditional, mountPrefixDemo } from "/conditional-view.mjs";
 
 const D = await (await fetch("/data.json")).json();
+renderConditional(D);
+mountPrefixDemo();
 const prep = prepare(D.rows, D.models);
 const prices = D.prices.map((p) => (p ? { ...p } : null));
 const policies = JSON.parse(JSON.stringify(D.policies));

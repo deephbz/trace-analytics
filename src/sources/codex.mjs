@@ -77,6 +77,7 @@ export const codex = {
       first: null,
       last: null,
       cause: null,
+      userInputAt: null,
       lastCall: null,
       reset: null, // compaction id waiting for the next call
       sync: null, // [t, type, payload type] of the last synchronous line
@@ -124,7 +125,7 @@ export const codex = {
     if (type === "event_msg" && TURN_EDGES.has(sub)) {
       st.first = st.last = null;
       st.inputs = sub === "task_started" ? [ts] : [];
-      if (sub === "task_started") st.cause = "user";
+      if (sub === "task_started") { st.cause = "user"; st.userInputAt = ts; }
       return;
     }
     if (type === "event_msg" && sub === "item_completed") {
@@ -133,7 +134,22 @@ export const codex = {
         const tm = ITEM_TIMES.exec(buf.toString("latin1", Math.max(start, end - 80), end));
         return output(st, tm ? Number(tm[1]) : ts, tm ? Number(tm[2]) : ts);
       }
-      if (it in INPUT_ITEMS) input(st, ts, INPUT_ITEMS[it]);
+      if (it in INPUT_ITEMS) {
+        input(st, ts, INPUT_ITEMS[it]);
+        if (INPUT_ITEMS[it] === 'tool') {
+          const p = JSON.parse(buf.toString('utf8', start, end)).payload;
+          const item = p.item;
+          const a = p.started_at_ms, b = p.completed_at_ms;
+          const timed = Number.isFinite(a) && Number.isFinite(b) && b >= a;
+          const status = String(item.status ?? '').toLowerCase();
+          const outcome = /timed.?out|timeout/.test(status) ? 'timeout' : /cancel|abort/.test(status) ? 'cancelled'
+            : item.exit_code != null ? (item.exit_code === 0 ? 'success' : 'failure')
+            : status === 'completed' ? 'success' : status === 'failed' ? 'failure' : 'unknown';
+          emit({kind:'tool',source:'codex',session:st.session,id:item.id ?? `${it}@${ts}`,call:null,
+            name:it === 'CommandExecution' ? 'shell' : it, t:timed?a:ts, end:timed?b:ts,
+            duration:timed?b-a:null,timing:timed?'execution-events':'unknown',outcome});
+        }
+      }
       return;
     }
     if (type === "response_item") {
@@ -151,6 +167,7 @@ export const codex = {
 
 function input(st, ts, cause) {
   st.inputs.push(ts);
+  if (cause === 'user') st.userInputAt = ts;
   if (st.cause == null || RANK[cause] > RANK[st.cause]) st.cause = cause;
 }
 
@@ -196,10 +213,11 @@ function usage(st, end, p, emit) {
     st.skipped.noModelItem++;
     return emit({ ...call, prev: st.lastCall, reset: null, compaction: null, cause: null, purpose: null, t: syncT, end, ...NO_TIMING });
   }
-  const turn = { ...call, prev: st.lastCall, reset: st.reset ? "compaction" : null, compaction: st.reset, cause: st.cause, purpose: "turn" };
+  const turn = { ...call, prev: st.lastCall, reset: st.reset ? "compaction" : null, compaction: st.reset, cause: st.cause, inputAt: st.cause === 'user' ? st.userInputAt : null, purpose: "turn" };
   st.lastCall = id;
   st.reset = null;
   st.cause = null;
+  st.userInputAt = null;
   if (!st.model) st.skipped.noModel++;
   if (start == null || !(last >= first && end >= last)) {
     st.skipped.badOrder++;

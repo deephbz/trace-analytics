@@ -6,6 +6,7 @@ import { resolvePrices } from "../prices.mjs";
 import { SCENARIOS } from "./policies.mjs";
 import { actualLogged, actualRepriced, coverage, prepare, simulate } from "./sim.mjs";
 import { requestTable } from "./table.mjs";
+import { analyzeConditional } from "./conditional.mjs";
 
 /** data: load() output. catalog: price catalog entries (prices.mjs). */
 export function analyzeCacheTtl(data, catalog, { overrides = {}, sources = ["pi"] } = {}) {
@@ -15,6 +16,7 @@ export function analyzeCacheTtl(data, catalog, { overrides = {}, sources = ["pi"
   return {
     table,
     prices,
+    conditional: analyzeConditional(data, Object.fromEntries(table.models.map((m,i)=>[m,prices[i]]))),
     prep,
     results: SCENARIOS.map((s) => ({ scenario: s, ...simulate(prep, prices, s) })),
     repriced: actualRepriced(prep, prices, table.warm),

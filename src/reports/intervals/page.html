@@ -1,0 +1,23 @@
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Where session time goes</title>
+<style>@font-face{font-family:Paper;src:url(/*FONT*/) format('woff2')}body{margin:32px auto;padding:0 24px;max-width:1080px;background:#f6f3ed;color:#252727;font:14px Paper,monospace;line-height:1.6}h1{font-size:30px}h2{margin-top:36px}p{max-width:900px}.muted{color:#666}.bar{height:38px;display:flex;margin:18px 0}.bar span{min-width:0}table{width:100%;border-collapse:collapse}th,td{text-align:right;padding:8px;border-bottom:1px solid #ddd}th:first-child,td:first-child{text-align:left}.key{display:inline-block;width:12px;height:12px;margin-right:8px}li{margin:8px 0}.callout{padding:16px;background:#fff;border-left:4px solid #bb8a25}a{color:#13767a}</style>
+<h1>Where session time goes</h1><p id="window" class="muted"></p>
+<p class="callout">These are <b>Pi and Codex session-local elapsed intervals</b>. Concurrent sessions add session-hours, not hours of your day. Pi tool waits are response-to-result proxies. Codex tool spans use explicit item start/end events. Both include wall-clock waiting.</p>
+<h2>Elapsed coverage, without double counting</h2><div id="bar" class="bar"></div><table id="phases"></table>
+<p class="muted">Overlap priority: model → compaction → tool waiting → awaiting user input → input-to-request overhead → unclassified. This is an accounting convention, not a causal attribution.</p>
+<h2>Coverage by source</h2><table id="sources"></table>
+<h2>Bash, shell, and other tool outcomes</h2><table id="outcomes"></table><p class="muted">Durations below are per-tool observed or proxy intervals, labeled by source. Parallel tools can overlap, so their sums must not be added to the elapsed coverage above. Success means the wrapper reported success; a background job can still be running.</p>
+<h2>Coverage and limits</h2><p id="coverage"></p><ul id="notes"></ul>
+<script>
+const D=/*DATA*/null;
+const labels={model:'Model request → response',compaction:'Compaction outside model intervals',tool:'Tool return waiting',awaitUser:'Awaiting user input (proxy)',harness:'Input → request overhead',unclassified:'Unclassified gaps'};
+const colors=['#397b98','#8c70a4','#b88935','#479b88','#ad6770','#b7b9b2'];
+const h=x=>(x/3600000).toFixed(2)+' h', sec=x=>x==null?'unavailable':(x/1000).toFixed(2)+' s';
+const esc=x=>String(x).replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+document.getElementById('window').textContent=`${new Date(D.window.sinceMs).toISOString()} → ${new Date(D.window.untilMs).toISOString()} · ${D.sessions} sessions · ${h(D.totalMs)} of covered session time`;
+document.getElementById('bar').innerHTML=Object.entries(D.totals).map(([k,v],i)=>`<span title="${labels[k]} ${h(v)}" style="width:${D.totalMs?100*v/D.totalMs:0}%;background:${colors[i]}"></span>`).join('');
+document.getElementById('phases').innerHTML='<tr><th>Phase</th><th>Session-hours</th><th>Share</th></tr>'+Object.entries(D.totals).map(([k,v],i)=>`<tr><td><span class="key" style="background:${colors[i]}"></span>${labels[k]}</td><td>${h(v)}</td><td>${D.totalMs?(100*v/D.totalMs).toFixed(1):'0'}%</td></tr>`).join('');
+document.getElementById('sources').innerHTML='<tr><th>Source</th><th>Sessions</th><th>Model</th><th>Tools</th><th>Unclassified</th></tr>'+D.bySource.map(r=>`<tr><td>${r.source}</td><td>${r.sessions}</td><td>${h(r.totals.model)}</td><td>${h(r.totals.tool)}</td><td>${h(r.totals.unclassified)}</td></tr>`).join('');
+document.getElementById('outcomes').innerHTML='<tr><th>Source / kind / timing / outcome</th><th>Count</th><th>Timed</th><th>Median wait</th><th>p90 wait</th><th>Sum of tool spans</th></tr>'+D.outcomes.map(r=>`<tr><td>${esc(r.source)} / ${esc(r.kind)} / ${esc(r.timing)} / ${esc(r.outcome)}</td><td>${r.n}</td><td>${r.timed}</td><td>${sec(r.p50Ms)}</td><td>${sec(r.p90Ms)}</td><td>${h(r.sumProxyMs)}</td></tr>`).join('');
+document.getElementById('coverage').textContent=`${D.missingCallTiming} calls lack request-end timing; ${D.unknownToolTiming} tools lack an anchored wait. ${h(D.overlapMs)} had overlapping categories, assigned once by priority. Claude Code and gateway-only requests are outside this interval study.`;
+document.getElementById('notes').innerHTML=D.notes.map(s=>`<li>${esc(s)}</li>`).join('');
+</script>

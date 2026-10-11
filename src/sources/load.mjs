@@ -29,7 +29,7 @@ const compactionIdentity = (c) => `${c.source}|${c.id}@${c.t}`;
 /** Records of one file with its patches applied. Copies, so the cached records stay as read. */
 function resolve(records) {
   const out = [];
-  const byId = { call: new Map(), compaction: new Map() };
+  const byId = { call: new Map(), compaction: new Map(), tool: new Map() };
   for (const r of records) {
     if (r.kind !== "patch") {
       const x = { ...r };
@@ -49,6 +49,7 @@ export async function load({ sinceMs, untilMs = Date.now(), sources = SOURCES, u
   const inWindow = (r) => r.t >= sinceMs && r.t < untilMs;
   const calls = [];
   const compactions = [];
+  const tools = [];
   const coverage = [];
   const seen = new Set();
   const ids = new Set();
@@ -59,16 +60,21 @@ export async function load({ sinceMs, untilMs = Date.now(), sources = SOURCES, u
   for (const name of order) {
     const adapter = sources[name];
     const { files, stats } = await scan(adapter, { sinceMs, useCache, cacheDir });
-    const cov = { source: name, ...stats, skipped: {}, calls: 0, compactions: 0, copies: 0, inOtherSource: 0 };
+    const cov = { source: name, ...stats, skipped: {}, calls: 0, compactions: 0, tools: 0, copies: 0, inOtherSource: 0 };
     for (const [, e] of files) {
       for (const [k, n] of Object.entries(e.state.skipped ?? {})) cov.skipped[k] = (cov.skipped[k] ?? 0) + n;
       for (const r of resolve(e.records)) {
-        const identity = r.kind === "call" ? callIdentity(r) : compactionIdentity(r);
+        const identity = `${r.kind}|${r.kind === "call" ? callIdentity(r) : compactionIdentity(r)}`;
         if (seen.has(identity)) {
           if (inWindow(r)) cov.copies++;
           continue;
         }
         seen.add(identity);
+        if (r.kind === "tool") {
+          tools.push(r);
+          if (inWindow(r)) cov.tools++;
+          continue;
+        }
         if (r.kind === "compaction") {
           compactions.push(r);
           if (inWindow(r)) cov.compactions++;
@@ -92,7 +98,7 @@ export async function load({ sinceMs, untilMs = Date.now(), sources = SOURCES, u
   calls.sort((a, b) => a.t - b.t);
   compactions.sort((a, b) => a.t - b.t);
   linkSummaryRequests(calls, compactions);
-  return { window, calls, compactions, coverage };
+  return { window, calls, compactions, tools, coverage };
 }
 
 /**

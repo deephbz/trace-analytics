@@ -11,6 +11,7 @@ import { analyzeCacheTtl } from "./analytics/cache-ttl/index.mjs";
 import { analyzeCompaction } from "./analytics/compaction.mjs";
 import { resolvePrices } from "./analytics/prices.mjs";
 import { analyzeSpeed } from "./analytics/speed.mjs";
+import { analyzeIntervals } from "./analytics/intervals.mjs";
 import { cacheTtlPayload, cacheTtlText } from "./reports/cache-ttl/text.mjs";
 import { compactionText } from "./reports/compaction/text.mjs";
 import { renderPage } from "./reports/html.mjs";
@@ -24,6 +25,14 @@ const html = (f) => ["text/html; charset=utf-8", f];
 
 // ctx: { codeVersion, catalog: { models, source }, overrides }
 export const STUDIES = {
+  intervals: {
+    title: 'Session time: model, tool waiting, input gaps, and residuals',
+    defaultSince: '14d', sources: ['pi','codex'],
+    analyze: analyzeIntervals,
+    text: r => `${r.sessions} Pi/Codex sessions; ${(r.totalMs/3600000).toFixed(2)} session-hours.\n${Object.entries(r.totals).map(([k,v])=>`${k}: ${(v/3600000).toFixed(2)} h`).join('\n')}\n${r.notes.join('\n')}`,
+    files: async r => ({'data.json': JSON.stringify(r), 'report.html': await renderPage(page('intervals'), {DATA:r})}),
+    routes: {'/': html(r=>renderPage(page('intervals'),{DATA:r})), '/data.json': json(r=>r)},
+  },
   speed: {
     title: "Speed of model calls: TTFT, decode, stalls, end-to-end",
     defaultSince: "14d",
@@ -42,7 +51,7 @@ export const STUDIES = {
     sources: ["pi"],
     analyze: (data, ctx) => ({ ...analyzeCacheTtl(data, ctx.catalog.models, { overrides: ctx.overrides }), catalogSource: ctx.catalog.source }),
     text: (bt) => `${cacheTtlText(bt)}\n\nPrices: ${bt.catalogSource}`,
-    files: (bt) => ({ "data.json": JSON.stringify(cacheTtlPayload(bt, { catalogSource: bt.catalogSource })) }),
+    files: (bt) => ({ "data.json": JSON.stringify(cacheTtlPayload(bt, { catalogSource: bt.catalogSource })), "conditional.json": JSON.stringify(bt.conditional) }),
     // The page reruns the simulation in the browser with editable prices and policies.
     routes: {
       "/": html(() => readFile(page("cache-ttl"), "utf8")),
@@ -50,6 +59,7 @@ export const STUDIES = {
       "/sim.mjs": js("./analytics/cache-ttl/sim.mjs"),
       "/policies.mjs": js("./analytics/cache-ttl/policies.mjs"),
       "/rates.mjs": js("./analytics/rates.mjs"),
+      "/conditional-view.mjs": js("./reports/cache-ttl/conditional.mjs"),
     },
   },
   compaction: {

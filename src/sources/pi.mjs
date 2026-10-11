@@ -55,6 +55,8 @@ export const pi = {
       session: basename(path, ".jsonl").replace(/^.*?Z_/, ""),
       paths: initPaths(),
       routes: [], // [call id, route] of the last calls, for the tps model check
+      pendingTools: {},
+      inputTimes: {},
       lastT: null,
       handoff: null, // { start, calls }
       skipped: { noTokens: 0, timingNoCall: 0, timingModelMismatch: 0, timingInvalid: 0 },
@@ -74,12 +76,17 @@ export const pi = {
     const tsm = TS.exec(head) ?? TS.exec(tail ?? buf.toString("utf8", Math.max(start, end - 300), end));
     const t = tsm ? Date.parse(tsm[1]) : null;
     if (t != null) st.lastT = t;
+    if (id != null) st.inputTimes[id] = st.inputTimes[parent] ?? null;
 
     if (type === "message") {
       const role = ROLE.exec(head)?.[1];
       if (role === "assistant") return assistant(st, id, parent, JSON.parse(buf.toString("utf8", start, end)), emit);
       if (role === "user") st.handoff = null;
-      if (role in INPUT_ROLES) return void place(st.paths, id, parent, "input", INPUT_ROLES[role]);
+      if (role === "toolResult") toolResult(st, id, t, JSON.parse(buf.toString("utf8", start, end)).message, emit);
+      if (role in INPUT_ROLES) {
+        st.inputTimes[id] = t;
+        return void place(st.paths, id, parent, "input", INPUT_ROLES[role]);
+      }
       return void place(st.paths, id, parent, role === "system" ? null : "input", "other");
     }
     if (type === "custom_message") {
@@ -93,6 +100,30 @@ export const pi = {
     place(st.paths, id, parent, null);
   },
 };
+
+// Only structured status and wrapper suffixes are inspected; tool output is not retained.
+export function toolOutcome(message) {
+  const text = typeof message.content === 'string' ? message.content : (message.content ?? []).filter((x) => x.type === "text").map((x) => x.text ?? "").join("\n");
+  const tail = text.slice(-1000);
+  if (/(?:^|\n)Command timed out(?: after [\d.]+ seconds)?\.?\s*$/i.test(tail)) return "timeout";
+  if (/(?:^|\n)Command aborted\.?\s*$/i.test(tail)) return "cancelled";
+  const code = /(?:^|\n)(?:Command|Process) exited with code (\d+)\s*$/i.exec(tail);
+  if (code) return Number(code[1]) === 0 ? "success" : "failure";
+  if (message.isError === true) return "failure";
+  return message.isError === false ? "success" : "unknown";
+}
+
+function toolResult(st, id, end, message, emit) {
+  const pending = st.pendingTools[message.toolCallId];
+  const start = pending?.start;
+  emit({ kind: "tool", source: "pi", session: st.session, id,
+    call: pending?.call ?? null, name: message.toolName ?? pending?.name ?? null,
+    t: Number.isFinite(start) && start <= end ? start : end, end,
+    duration: Number.isFinite(start) && start <= end ? end - start : null,
+    timing: Number.isFinite(start) && start <= end ? "response-to-result-proxy" : "unknown",
+    outcome: toolOutcome(message) });
+  // A copied/forked result can reuse the same tool-call identity. Preserve its anchor.
+}
 
 function usageOf(u) {
   return {
@@ -111,6 +142,9 @@ const NO_TIMING = { ttft: null, stream: null, stall: null, stalls: null, streamV
 
 function assistant(st, id, parent, o, emit) {
   const m = o.message;
+  for (const block of m.content ?? []) if (block.type === "toolCall" && block.id) {
+    st.pendingTools[block.id] = { call: id, start: Date.parse(o.timestamp), name: block.name ?? null };
+  }
   const u = m.usage;
   if (!u || !((u.input ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0) + (u.output ?? 0))) {
     if (u) st.skipped.noTokens++;
@@ -134,6 +168,7 @@ function assistant(st, id, parent, o, emit) {
     reset: p[1],
     compaction: p[2],
     cause: p[3],
+    inputAt: st.inputTimes[id] ?? null,
     purpose: "turn",
     route,
     // Without a request start, the response end stands in for it and the wall time is unknown.

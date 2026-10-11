@@ -4,7 +4,7 @@ Status: exploration. Repo scope, privacy, and result retention: [AGENTS.md](AGEN
 
 Studies of local coding-agent logs: how fast model calls are, which prompt-cache
 retention would cost least, and what context compaction costs. All three run
-the same pipeline on the same adapters.
+the same pipeline on shared adapters. The independent interval study adds tool waiting and residual session time.
 
 ```
  sources (knowledge)              analytics (intentions)             reports (presentation)
@@ -19,7 +19,7 @@ the same pipeline on the same adapters.
 
 - **Sources** (`src/sources/`) know each harness: its files, schemas, quirks, and
   what it does not log. Each adapter maps its files to two record kinds.
-- **The protocol** (`src/record.mjs`) defines CALL and COMPACTION. A field is
+- **The protocol** (`src/record.mjs`) defines CALL, COMPACTION, and TOOL. A field is
   `null` when the source does not log it; adapters never impute.
 - **Analytics** (`src/analytics/`) hold the questions and their formulas. They
   read records only, so a new harness needs only an adapter.
@@ -37,6 +37,7 @@ node bin/trace-analytics.mjs <study> [since] --serve [--port n] [--no-open]
 
 | Study | Question | Default window | Sources | Files |
 |---|---|---|---|---|
+| `intervals` | Where does session time go: models, tools, input gaps, residuals? | 14d | pi, codex | `data.json`, `report.html` |
 | `speed` | How fast are calls, and where does call time go? | 14d | pi, codex, claude, magpie | `report.json`, `report.html` |
 | `cache-ttl` | Which cache retention would have cost least, per route? | 7d | pi | `data.json` (page: `--serve`) |
 | `compaction` | How often do agents compact, at what cost and wait? | 28d | pi, codex, claude, magpie | `compactions.jsonl`, `stats.json`, `totals.json`, `report.html` |
@@ -146,6 +147,26 @@ URLs and a check date; `sim.mjs` replays requests; `table.mjs` builds its rows.
 The page reruns `sim.mjs` in the browser, so prices and policies are editable.
 Not modeled: prefixes shared across sessions, the minimum cacheable length, and
 retention beyond the nominal TTL.
+
+## Conditional TTL and interval accounting
+
+`src/analytics/cache-ttl/conditional.mjs` fits a shrunk conditional distribution of
+next compatible lineage access: within 5m, 5m–1h, or no access by 1h. It uses
+request-start information and a chronological holdout with a one-hour purge.
+The TTL report includes calibration, a bounded cold-write objective, and a separate
+sequential prefix replay against fixed 5m and 1h policies. These are counterfactuals;
+exact Cache Goblin markers, warming economics, and provider hits remain unverified.
+`conditional.json` retains the private fitted model and held-out observations.
+
+`src/analytics/intervals.mjs` partitions session-local elapsed intervals without
+adding parallel tool waits twice. Pi supplies response-to-result tool proxies;
+Codex supplies explicit tool-item start/end events. Bash and shell outcomes use
+logged status, not inferred timeout limits. Await-user gaps are proxies, and
+unexplained time stays unclassified. Concurrent sessions produce session-hours,
+not the user's wall-clock hours. Other harnesses are outside this interval study.
+
+The study plan and evaluator are in
+[`research/intervals-and-ttl/README.md`](research/intervals-and-ttl/README.md).
 
 ## Compaction
 
