@@ -6,17 +6,20 @@ import { load, SOURCES } from '../src/sources/load.mjs';
 import { READER_VERSION } from '../src/record.mjs';
 
 const help = `Usage: sessions <sessions|entries ID|calls|search QUERY> [options]
-  --since DATE --until DATE --harness pi|claude|codex|magpie
+  --since DATE|SPAN --until DATE|SPAN --harness pi|claude|codex|magpie
+  SPAN: nonnegative integer Nm, Nh, Nd, Nw (now minus minutes, hours, days, weeks)
   --role solo|leader|worker|automated --all --text --id ID (sessions)
   --limit N (search, default 20) --format jsonl|json|table
 Default Session visibility: solo/leader, non-scratch, with human turns.
 Times are epoch milliseconds. Each record carries reader version ${READER_VERSION}.
 Text requires --text, except search. Logs stay read-only.`;
 
-function date(value, fallback) {
+function date(value, fallback, now) {
   if (value === undefined) return fallback;
-  const n = Date.parse(value);
-  if (!Number.isFinite(n)) throw new Error('Invalid date');
+  const span = /^(\d+)([mhdw])$/.exec(value);
+  const units = { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
+  const n = span ? now - Number(span[1]) * units[span[2]] : Date.parse(value);
+  if (!Number.isFinite(n) || Math.abs(n) > 8.64e15) throw new Error('Invalid date');
   return n;
 }
 
@@ -33,7 +36,8 @@ try {
   if (v.id && verb !== 'sessions') throw new Error('--id is only valid for sessions');
   if (v.harness && !Object.hasOwn(SOURCES, v.harness)) throw new Error('Unknown harness');
   if (v.role && !['solo', 'leader', 'worker', 'automated'].includes(v.role)) throw new Error('Unknown role');
-  const options = { sinceMs: date(v.since, -Infinity), untilMs: date(v.until, Infinity), harness: v.harness, role: v.role, all: v.all,
+  const now = Date.now();
+  const options = { sinceMs: date(v.since, -Infinity, now), untilMs: date(v.until, Infinity, now), harness: v.harness, role: v.role, all: v.all,
     limit: v.limit === undefined ? 20 : Number(v.limit) };
   if (!(options.sinceMs < options.untilMs) || !Number.isSafeInteger(options.limit) || options.limit < 1) throw new Error('Invalid window or limit');
   let records;

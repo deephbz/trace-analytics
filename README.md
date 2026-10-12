@@ -43,7 +43,11 @@ node bin/sessions.mjs search 'example question' --all --limit 20
 ```
 
 JSONL is the default. JSON writes one array. Table output includes cwd.
-Every output record carries `reader`. Times use epoch milliseconds. Defaults
+Every output record carries `reader`. Times use epoch milliseconds.
+`--since` and `--until` accept absolute dates or nonnegative integer spans:
+`Nm`, `Nh`, `Nd`, `Nw`. A span subtracts minutes, hours, days, or weeks from
+one shared current-time anchor. For example, `sessions --since 7d` selects
+Sessions updated during the last seven days. Malformed values exit 1. Defaults
 exclude workers, automation, scratch directories, and Sessions without human
 turns. `--all` includes them; `--role` selects a role. `sessions --id` bypasses
 visibility filters. IDs can be qualified IDs or unique prefixes. Unknown and

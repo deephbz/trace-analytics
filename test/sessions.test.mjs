@@ -211,3 +211,31 @@ test('Codex read-only metadata supports old schema and spawn-edge roles', () => 
   assert.equal(searchTurns(current, 'title', { all: true })[0].kind, 'title');
   assert.deepEqual(await readFile(db), before);
 }));
+
+// Fixture times sit far from each cutoff so process startup cannot change membership.
+test('CLI relative since/until spans keep all units and reject malformed values', () => fixture(async dir => {
+  const folder = join(dir, '.pi', 'agent', 'sessions', 'example');
+  await mkdir(folder, { recursive: true });
+  const now = Date.now();
+  const units = { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
+  for (const [unit, span] of Object.entries(units)) for (const [age, factor] of [['recent', 0.5], ['older', 2]]) {
+    const id = `${age}-${unit}`, stamp = new Date(now - span * factor).toISOString();
+    await writeFile(join(folder, `${id}.jsonl`), jsonl([
+      { ...head(id), timestamp: stamp }, { ...msg('ask', null, 1, 'user', 'synthetic ask'), timestamp: stamp },
+    ]));
+  }
+  const run = promisify(execFile), cli = fileURLToPath(new URL('../bin/sessions.mjs', import.meta.url));
+  const invoke = (...args) => run(process.execPath, [cli, 'sessions', '--all', '--format', 'json', ...args], { env: { ...process.env, HOME: dir } });
+  for (const unit of Object.keys(units)) {
+    const since = JSON.parse((await invoke('--since', `1${unit}`)).stdout).map(s => s.session);
+    assert.ok(since.includes(`recent-${unit}`));
+    assert.ok(!since.includes(`older-${unit}`));
+    const until = JSON.parse((await invoke('--until', `1${unit}`)).stdout).map(s => s.session);
+    assert.ok(until.includes(`older-${unit}`));
+    assert.ok(!until.includes(`recent-${unit}`));
+  }
+  for (const bad of ['-1d', '1.5h', '7x', 'Infinitym', '9999999999999999999999999d']) {
+    await assert.rejects(invoke('--since', bad), error => error.code === 1);
+    await assert.rejects(invoke('--until', bad), error => error.code === 1);
+  }
+}));
