@@ -49,7 +49,8 @@ export function observe(st, o, emit) {
     if (o.type === 'ai-title' && s.text && o.aiTitle) { s.title = o.aiTitle; s.titleTime = t; s.titleEntry = o.uuid ?? null; }
     if (o.agentId) { s.native = o.agentId; s.parent = o.sessionId ?? null; }
     else if (o.sessionId) s.native = o.sessionId;
-    id = o.uuid; parent = o.parentUuid ?? null;
+    id = o.uuid;
+    parent = o.parentUuid ?? (o.subtype === 'compact_boundary' ? o.logicalParentUuid : null) ?? null;
     text = textOf(o.message?.content);
     const blocks = o.message?.content;
     const tool = Array.isArray(blocks) ? blocks.find(x => x.type === 'tool_result') : null;

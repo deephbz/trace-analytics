@@ -17,11 +17,13 @@ export function activeBranch(entries, tip) {
   const nodes = new Map(entries.map(e => [e.id, e]));
   const seen = new Set();
   const out = [];
-  for (let id = tip; id != null && nodes.has(id) && !seen.has(id); id = nodes.get(id).parent) {
+  let id = tip;
+  while (id != null && nodes.has(id) && !seen.has(id)) {
     seen.add(id);
     out.push(nodes.get(id));
+    id = nodes.get(id).parent;
   }
-  return out.reverse();
+  return { entries: out.reverse(), branch: id == null ? 'complete' : 'partial' };
 }
 
 const LIMIT = 2048;

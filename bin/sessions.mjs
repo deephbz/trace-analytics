@@ -23,6 +23,27 @@ function date(value, fallback, now) {
   return n;
 }
 
+const cell = value => value == null ? '-' : String(value).replace(/\s+/g, ' ');
+const minute = t => t == null ? '-' : `${new Date(t).toISOString().slice(0, 16)}Z`;
+const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
+
+function table(records, verb, text) {
+  console.log(`reader ${READER_VERSION}`);
+  const fields = verb === 'sessions' ? ['updated', 'id', 'role', 'turns', 'cwd', ...(text ? ['title'] : [])]
+    : verb === 'search' ? ['time', 'session', 'kind', 'snippet'] : ['time', 'session', 'kind', 'id', 'name', ...(text ? ['text'] : [])];
+  console.log(fields.join('\t'));
+  for (const r of records) {
+    const row = verb === 'sessions' ? [minute(r.updated), r.id, r.role, r.humanTurns, r.cwd, ...(text ? [r.title] : [])]
+      : verb === 'search' ? [minute(r.t), r.session, r.kind, r.snippet]
+        : [minute(r.t), verb === 'calls' ? `${r.source}:${r.session ?? '-'}` : r.session, r.kind, r.id, r.name, ...(text ? [r.text] : [])];
+    console.log(row.map(cell).join('\t'));
+    if (verb === 'sessions') {
+      const argv = r.resume.argv.map(quote).join(' ');
+      console.log(`  ${r.resume.cwd == null ? argv : `cd ${quote(r.resume.cwd)} && ${argv}`}`);
+    }
+  }
+}
+
 try {
   const { values: v, positionals: p } = parseArgs({ allowPositionals: true, options: {
     id: { type: 'string' }, since: { type: 'string' }, until: { type: 'string' }, harness: { type: 'string' }, role: { type: 'string' },
@@ -72,14 +93,7 @@ try {
   }
   if (v.format === 'json') console.log(JSON.stringify(records));
   else if (v.format === 'jsonl') for (const r of records) console.log(JSON.stringify(r));
-  else {
-    console.log(`reader ${READER_VERSION}`);
-    if (records.length) {
-      const fields = Object.keys(records[0]);
-      console.log(fields.join('\t'));
-      for (const r of records) console.log(fields.map(k => JSON.stringify(r[k]) ?? '').join('\t'));
-    }
-  }
+  else table(records, verb, v.text);
 } catch (error) {
   console.error(error.message);
   process.exitCode = error.exitCode ?? 1;

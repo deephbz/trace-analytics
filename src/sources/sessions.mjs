@@ -57,7 +57,8 @@ export async function readSessions({ text = false, sources = adapters, cacheDir 
       if (s.started === null || s.native === null) continue;
       const id = `${harness}:${s.native}`;
       const entries = file.records.filter(r => r.kind === 'entry');
-      const branch = harness === 'pi' || harness === 'claude' ? activeBranch(entries, s.tip) : entries;
+      const ancestry = harness === 'pi' || harness === 'claude' ? activeBranch(entries, s.tip) : { entries, branch: 'file-order' };
+      const branch = ancestry.entries;
       const humans = branch.filter(r => r.entryKind === 'human');
       const replies = branch.filter(r => r.entryKind === 'assistant' && r.text?.trim());
       pathIds.set(path, id);
@@ -65,7 +66,7 @@ export async function readSessions({ text = false, sources = adapters, cacheDir 
       const record = { reader: READER_VERSION, id, harness, session: s.native,
         role: s.leader ? 'leader' : s.worker || (parent && !humans.length) ? 'worker' : s.automated ? 'automated' : 'solo',
         parent, cwd: s.cwd, scratch: s.cwd === null ? null : /^\/(?:private\/)?(?:tmp(?:\/|$)|var\/folders(?:\/|$))/.test(s.cwd),
-        path, started: s.started, updated: s.updated, archived: s.archived, humanTurns: humans.length,
+        path, started: s.started, updated: s.updated, archived: s.archived, branch: ancestry.branch, humanTurns: humans.length,
         resume: { cwd: s.cwd, argv: harness === 'pi' ? ['pi', '--session', s.native] : harness === 'claude' ? ['claude', '--resume', s.native] : ['codex', 'resume', s.native] } };
       if (text) Object.assign(record, { title: s.title, firstAsk: humans[0]?.text ?? null,
         lastAsk: humans.at(-1)?.text ?? null, lastReply: replies.at(-1)?.text ?? null });
@@ -92,7 +93,7 @@ export async function readSessions({ text = false, sources = adapters, cacheDir 
       r = { reader: READER_VERSION, id, harness: 'codex', session: row.id, role: 'solo', parent: row.parent ? `codex:${row.parent}` : null,
         cwd: row.cwd ?? null, scratch: row.cwd == null ? null : /^\/(?:private\/)?(?:tmp(?:\/|$)|var\/folders(?:\/|$))/.test(row.cwd),
         path: row.rollout_path ?? null, started: row.created_at_ms ?? (row.created_at == null ? null : row.created_at * 1000),
-        updated: row.updated_at_ms ?? (row.updated_at == null ? null : row.updated_at * 1000), archived: Boolean(row.archived), humanTurns: 0,
+        updated: row.updated_at_ms ?? (row.updated_at == null ? null : row.updated_at * 1000), archived: Boolean(row.archived), branch: 'file-order', humanTurns: 0,
         resume: { cwd: row.cwd ?? null, argv: ['codex', 'resume', row.id] } };
       if (text) Object.assign(r, { title: null, firstAsk: null, lastAsk: null, lastReply: null });
       sessions.set(id, r); streams.set(id, []);
@@ -125,16 +126,18 @@ export function visibleSessions(records, { sinceMs = -Infinity, untilMs = Infini
 
 export function searchTurns(catalog, query, options = {}) {
   const hits = [];
-  const needle = query.toLocaleLowerCase();
+  const terms = query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
+  if (!terms.length) return hits;
   for (const s of visibleSessions(catalog.sessions, { ...options, sinceMs: -Infinity, untilMs: Infinity })) for (const e of [
     ...(catalog.entries.get(s.id) ?? []).filter(e => e.kind === 'human'), ...(catalog.searchExtras.get(s.id) ?? []),
   ]) {
     if (e.t !== null && (e.t < (options.sinceMs ?? -Infinity) || e.t >= (options.untilMs ?? Infinity))) continue;
     if (e.t === null && (Number.isFinite(options.sinceMs) || Number.isFinite(options.untilMs))) continue;
-    const at = e.text.toLocaleLowerCase().indexOf(needle);
-    if (at < 0) continue;
+    const body = e.text.toLocaleLowerCase();
+    if (!terms.every(term => body.includes(term))) continue;
+    const at = body.indexOf(terms[0]);
     hits.push({ reader: READER_VERSION, session: s.id, entry: e.id ?? e.entry ?? null, t: e.t, kind: e.kind,
-      snippet: e.text.slice(Math.max(0, at - 80), at + query.length + 160).replace(/\s+/g, ' ') });
+      snippet: e.text.slice(Math.max(0, at - 80), at + terms[0].length + 160).replace(/\s+/g, ' ') });
   }
-  return hits.sort((a, b) => b.t - a.t).slice(0, options.limit ?? 20);
+  return hits.sort((a, b) => a.t === null ? (b.t === null ? 0 : 1) : b.t === null ? -1 : b.t - a.t).slice(0, options.limit ?? 20);
 }

@@ -85,14 +85,19 @@
 //   scratch: cwd is under a temporary directory (null if cwd is unknown).
 //   started, updated: epoch ms or null; archived: logged archive state.
 //   humanTurns: count on the selected entry stream; resume: {cwd, argv}, no shell.
+//   branch: complete | partial (missing parent or cycle) | file-order (Codex).
 //   Only with text opt-in: title, firstAsk, lastAsk, lastReply (null when absent).
+//   Pi session_info title labels the whole Session; it is exempt from branch scope.
+//   Session windows include spans with updated >= since and started < until.
 // ENTRY: session is the SESSION id; id and parent identify source entries.
 //   t: epoch ms or null; kind: human | injected | assistant | tool | compaction |
 //   branch-summary | other; name: tool name or null. Only with text opt-in: text.
-//   Pi uses the path from the last appended entry to the root, without a depth cap.
-//   Other sources use file order. Codex unlabelled entries use line:<ordinal> ids.
+//   Pi and Claude walk from the last appended entry to the root without a depth cap.
+//   Claude compact_boundary uses logicalParentUuid when parentUuid is null.
+//   Codex uses file order; unlabelled entries use line:<ordinal> ids.
 // SEARCH: session, entry, t identify a match; kind: human | title | reply.
-//   snippet carries text. Title entry/time can be null when the source does not log them.
+//   snippet carries text. Every whitespace-separated query term must match the same
+//   record, case-insensitive. Title entry/time can be null; null times sort last.
 export const READER_VERSION = '1';
 
 /** Key of a call or compaction across sources. */

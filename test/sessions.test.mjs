@@ -163,7 +163,7 @@ test('CLI privacy, branch populations, text selection and id errors', () => fixt
   const path = join(folder, 'unrelated-name.jsonl');
   const usage = { provider: 'synthetic', model: 'example', timestamp: t + 2,
     usage: { input: 10, output: 2 }, stopReason: 'stop' };
-  await writeFile(path, jsonl([head('cli'), msg('u', null, 1, 'user', 'visible question'),
+  await writeFile(path, jsonl([{ ...head('cli'), cwd: "/work/example's space" }, msg('u', null, 1, 'user', 'visible question'),
     msg('old', 'u', 2, 'assistant', 'abandoned answer', usage),
     msg('active', 'u', 3, 'assistant', 'active answer', { ...usage, timestamp: t + 3 }),
     msg('tool', 'active', 4, 'toolResult', 'full tool text', { toolName: 'example' })]));
@@ -184,7 +184,14 @@ test('CLI privacy, branch populations, text selection and id errors', () => fixt
   assert.equal(calls[0].id, 'old');
   assert.equal(calls[0].session, 'cli');
   assert.equal(JSON.parse((await invoke('calls', '--since', iso(0), '--format', 'json')).stdout).filter(c => c.kind === 'call').length, 2);
-  assert.ok(!(await invoke('sessions', '--format', 'table')).stdout.includes('answer'));
+  const table = (await invoke('sessions', '--format', 'table')).stdout;
+  assert.ok(table.includes('updated\tid\trole\tturns\tcwd'));
+  assert.ok(table.includes('2026-01-01T00:00Z\tpi:cli\tsolo\t1'));
+  assert.ok(table.includes("cd '/work/example'\\''s space' && 'pi' '--session' 'cli'"));
+  assert.ok(!table.includes('answer') && !table.includes('firstAsk'));
+  assert.ok((await invoke('sessions', '--text', '--format', 'table')).stdout.includes('\tcwd\ttitle'));
+  assert.ok((await invoke('search', 'visible question', '--format', 'table')).stdout.includes('time\tsession\tkind\tsnippet'));
+  assert.equal(JSON.parse((await invoke('sessions', '--since', iso(2), '--until', iso(3), '--format', 'json')).stdout).length, 1);
   await assert.rejects(invoke('entries', 'missing'), error => error.code === 2 && error.stderr.includes('pi:cli'));
   await assert.rejects(invoke('sessions', '--since', 'not-a-date'), error => error.code === 1);
 }));
@@ -238,4 +245,52 @@ test('CLI relative since/until spans keep all units and reject malformed values'
     await assert.rejects(invoke('--since', bad), error => error.code === 1);
     await assert.rejects(invoke('--until', bad), error => error.code === 1);
   }
+}));
+
+test('search requires every term in one record and sorts unlogged title time last', () => fixture(async dir => {
+  const path = join(dir, 'keywords.jsonl');
+  await writeFile(path, jsonl([head('keywords'),
+    msg('human', null, 1, 'user', 'Please IMPROVE this useful skill'),
+    msg('second', 'human', 2, 'user', 'improve alone'),
+    msg('third', 'second', 3, 'user', 'skill alone'),
+    msg('reply', 'third', 4, 'assistant', 'skill can improve'),
+    { type: 'session_info', name: 'skill to improve' },
+  ]));
+  const catalog = await readSessions({ sources: { pi: source(pi, [path]) }, text: true, useCache: false, codexDb: null });
+  const hits = searchTurns(catalog, '  improve   SKILL  ', { all: true });
+  assert.deepEqual(hits.map(h => h.kind), ['reply', 'human', 'title']);
+  assert.deepEqual(hits.map(h => h.t), [t + 4, t + 1, null]);
+  assert.equal(searchTurns(catalog, '   ', { all: true }).length, 0);
+}));
+
+test('Claude active branch follows logical parent at a compact boundary', () => fixture(async dir => {
+  const path = join(dir, 'claude.jsonl');
+  const entry = (uuid, parentUuid, n, extra) => ({ uuid, parentUuid, sessionId: 'claude-fork', timestamp: iso(n), cwd: '/work/example', ...extra });
+  await writeFile(path, jsonl([
+    entry('root', null, 1, { type: 'user', message: { content: 'root ask' } }),
+    entry('abandoned', 'root', 2, { type: 'user', message: { content: 'abandoned ask' } }),
+    entry('boundary', null, 3, { type: 'system', subtype: 'compact_boundary', logicalParentUuid: 'root' }),
+    entry('summary', 'boundary', 4, { type: 'user', isCompactSummary: true, message: { content: 'summary' } }),
+    entry('active', 'summary', 5, { type: 'user', message: { content: 'active ask' } }),
+  ]));
+  const catalog = await readSessions({ sources: { claude: source(claude, [path]) }, text: true, useCache: false, codexDb: null });
+  assert.deepEqual(catalog.entries.get('claude:claude-fork').map(e => e.id), ['root', 'boundary', 'summary', 'active']);
+  assert.equal(catalog.sessions[0].branch, 'complete');
+  assert.equal(catalog.sessions[0].humanTurns, 2);
+  assert.equal(searchTurns(catalog, 'abandoned', { all: true }).length, 0);
+}));
+
+test('missing parents and cycles mark ancestry partial; Pi title stays Session-wide', () => fixture(async dir => {
+  const missing = join(dir, 'missing.jsonl'), cycle = join(dir, 'cycle.jsonl'), title = join(dir, 'title.jsonl');
+  await writeFile(missing, jsonl([head('missing'), msg('ask', 'unlogged', 1, 'user', 'partial ask')]));
+  await writeFile(cycle, jsonl([head('cycle'), msg('a', 'b', 1, 'user', 'cycle ask'), msg('b', 'a', 2, 'assistant', 'cycle reply')]));
+  await writeFile(title, jsonl([head('title'), msg('root', null, 1, 'user', 'root ask'),
+    { type: 'session_info', id: 'offbranch-title', parentId: 'root', timestamp: iso(2), name: 'global label' },
+    msg('fork', 'root', 3, 'user', 'fork ask')]));
+  const catalog = await readSessions({ sources: { pi: source(pi, [missing, cycle, title]) }, text: true, useCache: false, codexDb: null });
+  assert.equal(catalog.sessions.find(s => s.session === 'missing').branch, 'partial');
+  assert.equal(catalog.sessions.find(s => s.session === 'cycle').branch, 'partial');
+  assert.equal(catalog.sessions.find(s => s.session === 'title').branch, 'complete');
+  assert.ok(!catalog.entries.get('pi:title').some(e => e.id === 'offbranch-title'));
+  assert.equal(searchTurns(catalog, 'global label', { all: true })[0].kind, 'title');
 }));

@@ -42,12 +42,16 @@ node bin/sessions.mjs calls --since 2026-01-01 --until 2026-02-01
 node bin/sessions.mjs search 'example question' --all --limit 20
 ```
 
-JSONL is the default. JSON writes one array. Table output includes cwd.
+JSONL is the default. JSON writes one array. The compact Session table shows
+UTC ISO minute, id, role, human turns, cwd, and title with `--text`. Each Session
+has a shell-quoted `cd CWD && ARGV` resume line. Search tables show time,
+Session, kind, and snippet.
 Every output record carries `reader`. Times use epoch milliseconds.
 `--since` and `--until` accept absolute dates or nonnegative integer spans:
 `Nm`, `Nh`, `Nd`, `Nw`. A span subtracts minutes, hours, days, or weeks from
 one shared current-time anchor. For example, `sessions --since 7d` selects
-Sessions updated during the last seven days. Malformed values exit 1. Defaults
+Sessions whose `[started, updated]` span overlaps the last seven days.
+Windows include `updated >= since` and `started < until`. Malformed values exit 1. Defaults
 exclude workers, automation, scratch directories, and Sessions without human
 turns. `--all` includes them; `--role` selects a role. `sessions --id` bypasses
 visibility filters. IDs can be qualified IDs or unique prefixes. Unknown and
@@ -55,9 +59,14 @@ ambiguous IDs exit 2 and list candidates on stderr.
 
 Default output contains no titles or message text. Only `search` and `--text`
 read text. Search returns human turns, titles, and the last assistant reply.
-Each hit includes its kind and logged time. Unlogged title times stay null.
-Pi entries, human-turn counts, search and text summaries follow the exact
-active branch. Role inference uses the whole history. A parentSession fork does not imply
+Each whitespace-separated query term must match the same human turn, title,
+or last reply, case-insensitive. Each hit includes its kind and logged time.
+Unlogged title times stay null and sort last. Pi and Claude entries, human-turn
+counts, search and text summaries follow the exact active branch. A Pi
+`session_info` title labels the whole Session; this is a ratified exception.
+Claude compact boundaries follow `logicalParentUuid` when `parentUuid` is null.
+SESSION `branch` reports `complete`, `partial` for a missing parent or cycle,
+or `file-order` for Codex. Role inference uses the whole history. A parentSession fork does not imply
 leadership. Logged team-tool use or a worker child supplies leadership evidence.
 Role and injected-turn
 classification remain provisional. A human turn can start with an angle bracket.
@@ -74,7 +83,8 @@ A CALL joins a SESSION through `${source}:${session}`. Resume uses `{cwd, argv}`
 Each run refreshes the incremental index. Reader indexes live under
 `~/.cache/trace-analytics/reader/`. Plain and text indexes stay separate.
 Directories use mode 700; files use mode 600 under any umask. Delete caches to
-rebuild them. The scanner persists one file record per JSONL row to avoid a
+rebuild them. Incremental scans support appended or replaced files. They do not
+detect a same-inode rewrite beyond the first 64 bytes. The scanner persists one file record per JSONL row to avoid a
 single-string size limit. Catalog/search text caches omit tool output.
 `entries --text` reads full text only from the selected Session without caching
 it. Private results and real logs must not enter public fixtures or Git.
