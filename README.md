@@ -44,8 +44,9 @@ node bin/sessions.mjs search 'example question' --all --limit 20
 
 JSONL is the default. JSON writes one array. Table output includes cwd.
 Every output record carries `reader`. Times use epoch milliseconds. Defaults
-exclude workers, automation, scratch directories, and Sessions without human
-turns. `--all` includes them; `--role` selects a role. `sessions --id` bypasses
+exclude workers, automation, and scratch directories. The Session list also
+excludes Sessions without human turns. Search can find their titles and last
+replies. `--all` includes hidden Sessions; `--role` selects a role. `sessions --id` bypasses
 visibility filters. IDs can be qualified IDs or unique prefixes. Unknown and
 ambiguous IDs exit 2 and list candidates on stderr.
 
@@ -53,7 +54,8 @@ Default output contains no titles or message text. Only `search` and `--text`
 read text. Search returns human turns, titles, and the last assistant reply.
 Each hit includes its kind and logged time. Unlogged title times stay null.
 Pi entries, human-turn counts, search and text summaries follow the exact
-active branch. Role inference uses the whole history. Role and injected-turn
+active branch. Role inference uses the whole history. Pi leader inference requires logged
+team-tool use; a parentSession fork does not imply leadership. Role and injected-turn
 classification remain provisional. A human turn can start with an angle bracket.
 
 The catalog includes Claude subagents and bridge sessions. Analytics keep their

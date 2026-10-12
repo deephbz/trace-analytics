@@ -113,19 +113,21 @@ export async function readSessions({ text = false, sources = adapters, cacheDir 
     const raw = parents.get(r.id);
     if (raw?.includes('/')) r.parent = pathIds.get(raw) ?? null;
   }
-  for (const r of sessions.values()) if (r.parent && sessions.has(r.parent) && sessions.get(r.parent).role === 'solo') sessions.get(r.parent).role = 'leader';
+  // Codex logs spawn edges. Pi parentSession can describe a conversation fork;
+  // only logged team-tool use classifies a Pi leader.
+  for (const r of sessions.values()) if (r.harness === 'codex' && r.parent && sessions.has(r.parent) && sessions.get(r.parent).role === 'solo') sessions.get(r.parent).role = 'leader';
   return { sessions: [...sessions.values()].sort((a, b) => b.updated - a.updated), entries: streams, searchExtras, coverage };
 }
 
-export function visibleSessions(records, { sinceMs = -Infinity, untilMs = Infinity, harness, role, all = false } = {}) {
+export function visibleSessions(records, { sinceMs = -Infinity, untilMs = Infinity, harness, role, all = false, requireHumanTurns = true } = {}) {
   return records.filter(r => r.updated >= sinceMs && r.started < untilMs && (!harness || r.harness === harness)
-    && (!role || r.role === role) && (all || role || (['solo', 'leader'].includes(r.role) && !r.scratch && r.humanTurns > 0)));
+    && (!role || r.role === role) && (all || role || (['solo', 'leader'].includes(r.role) && !r.scratch && (!requireHumanTurns || r.humanTurns > 0))));
 }
 
 export function searchTurns(catalog, query, options = {}) {
   const hits = [];
   const needle = query.toLocaleLowerCase();
-  for (const s of visibleSessions(catalog.sessions, { ...options, sinceMs: -Infinity, untilMs: Infinity })) for (const e of [
+  for (const s of visibleSessions(catalog.sessions, { ...options, sinceMs: -Infinity, untilMs: Infinity, requireHumanTurns: false })) for (const e of [
     ...(catalog.entries.get(s.id) ?? []).filter(e => e.kind === 'human'), ...(catalog.searchExtras.get(s.id) ?? []),
   ]) {
     if (e.t !== null && (e.t < (options.sinceMs ?? -Infinity) || e.t >= (options.untilMs ?? Infinity))) continue;

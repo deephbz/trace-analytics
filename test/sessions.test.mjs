@@ -11,7 +11,7 @@ import { pi } from '../src/sources/pi.mjs';
 import { claude } from '../src/sources/claude.mjs';
 import { codex } from '../src/sources/codex.mjs';
 import { load } from '../src/sources/load.mjs';
-import { readSessions, searchTurns } from '../src/sources/sessions.mjs';
+import { readSessions, searchTurns, visibleSessions } from '../src/sources/sessions.mjs';
 
 const t = Date.parse('2026-01-01T00:00:00Z');
 const iso = n => new Date(t + n).toISOString();
@@ -84,6 +84,21 @@ test('search returns turn, title and last reply anchors; injected turns stay vis
   assert.deepEqual(hits.map(h => h.t), [t + 4, t + 3, t + 1]);
   assert.equal(searchTurns(c, 'needle', { all: true, sinceMs: t + 2 }).length, 2);
   assert.equal(c.entries.get('pi:search')[1].kind, 'injected');
+}));
+
+test('Pi conversation forks do not imply team leadership; reply-only search stays visible', () => fixture(async dir => {
+  const parentPath = join(dir, 'parent.jsonl'), childPath = join(dir, 'child.jsonl');
+  await writeFile(parentPath, jsonl([head('parent'), msg('reply', null, 1, 'assistant', 'unique reply phrase')]));
+  await writeFile(childPath, jsonl([{ ...head('child'), parentSession: parentPath }, msg('ask', null, 2, 'user', 'child question')]));
+  const catalog = await readSessions({ sources: { pi: source(pi, [parentPath, childPath]) }, text: true, useCache: false, codexDb: null });
+  assert.equal(catalog.sessions.find(s => s.session === 'parent').role, 'solo');
+  assert.equal(catalog.sessions.find(s => s.session === 'child').parent, 'pi:parent');
+  assert.equal(visibleSessions(catalog.sessions).some(s => s.session === 'parent'), false);
+  const hits = searchTurns(catalog, 'unique reply phrase');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].session, 'pi:parent');
+  assert.equal(hits[0].kind, 'reply');
+  assert.equal(hits[0].t, t + 1);
 }));
 
 test('reader cache directory and files resist umask 022', () => fixture(async dir => {
