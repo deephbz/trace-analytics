@@ -23,7 +23,7 @@ test("layers import only what they may", () => {
   const bad = [];
   for (const f of files(SRC)) {
     const layer = relative(SRC, f).split("/")[0];
-    for (const [, spec] of readFileSync(f, "utf8").matchAll(/(?:from|import)\s*\(?\s*"(\.{1,2}\/[^"]+)"/g)) {
+    for (const [, spec] of readFileSync(f, "utf8").matchAll(/(?:from|import)\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/g)) {
       const target = relative(SRC, resolve(join(f, ".."), spec)).split("/")[0];
       if (FORBIDDEN[layer]?.includes(target)) bad.push(`${relative(SRC, f)} -> ${spec}`);
     }

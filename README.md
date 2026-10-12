@@ -18,8 +18,8 @@ the same pipeline on shared adapters. The independent interval study adds tool w
 ```
 
 - **Sources** (`src/sources/`) know each harness: its files, schemas, quirks, and
-  what it does not log. Each adapter maps its files to two record kinds.
-- **The protocol** (`src/record.mjs`) defines CALL, COMPACTION, and TOOL. A field is
+  what it does not log. The session reader reuses these adapters and their scanner.
+- **The protocol** (`src/record.mjs`) defines CALL, COMPACTION, TOOL, SESSION, and ENTRY. A field is
   `null` when the source does not log it; adapters never impute.
 - **Analytics** (`src/analytics/`) hold the questions and their formulas. They
   read records only, so a new harness needs only an adapter.
@@ -27,6 +27,51 @@ the same pipeline on shared adapters. The independent interval study adds tool w
   read sources.
 - `src/pipeline.mjs` wires the layers per study. `test/boundaries.test.mjs`
   enforces the import rules.
+
+## Session reader
+
+The reader owns local harness parsing. Consumers call its CLI and own their
+questions. It reads logs without changing them. Protocol fields live in
+`src/record.mjs`; `node bin/sessions.mjs --help` lists options.
+
+```sh
+node bin/sessions.mjs sessions --format json
+node bin/sessions.mjs sessions --id pi:example --text --format table
+node bin/sessions.mjs entries pi:example --text
+node bin/sessions.mjs calls --since 2026-01-01 --until 2026-02-01
+node bin/sessions.mjs search 'example question' --all --limit 20
+```
+
+JSONL is the default. JSON writes one array. Table output includes cwd.
+Every output record carries `reader`. Times use epoch milliseconds. Defaults
+exclude workers, automation, scratch directories, and Sessions without human
+turns. `--all` includes them; `--role` selects a role. `sessions --id` bypasses
+visibility filters. IDs can be qualified IDs or unique prefixes. Unknown and
+ambiguous IDs exit 2 and list candidates on stderr.
+
+Default output contains no titles or message text. Only `search` and `--text`
+read text. Search returns human turns, titles, and the last assistant reply.
+Each hit includes its kind and logged time. Unlogged title times stay null.
+Pi entries, human-turn counts, search and text summaries follow the exact
+active branch. Role inference uses the whole history. Role and injected-turn
+classification remain provisional. A human turn can start with an angle bracket.
+
+The catalog includes Claude subagents and bridge sessions. Analytics keep their
+existing discovery population. Claude subagent IDs use logged `agentId`; their
+logged `sessionId` names the parent. Codex uses rollouts and, when present,
+`state_5.sqlite` in read-only mode through `sqlite3`. Missing sources produce
+coverage notes with exit 0. Read failures exit nonzero. Coverage on stderr
+counts discovered files and copies. The freshest copy of a Session wins.
+`calls` retains usage from all branches and filters each output record by time.
+A CALL joins a SESSION through `${source}:${session}`. Resume uses `{cwd, argv}`.
+
+Each run refreshes the incremental index. Reader indexes live under
+`~/.cache/trace-analytics/reader/`. Plain and text indexes stay separate.
+Directories use mode 700; files use mode 600 under any umask. Delete caches to
+rebuild them. The scanner persists one file record per JSONL row to avoid a
+single-string size limit. Catalog/search text caches omit tool output.
+`entries --text` reads full text only from the selected Session without caching
+it. Private results and real logs must not enter public fixtures or Git.
 
 ## Use
 

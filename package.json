@@ -4,7 +4,7 @@
   "private": true,
   "description": "Studies of local coding-agent logs (pi, Codex, Claude Code, Magpie gateway): call speed, prompt-cache TTL, context compaction.",
   "type": "module",
-  "bin": { "trace-analytics": "./bin/trace-analytics.mjs" },
+  "bin": { "trace-analytics": "./bin/trace-analytics.mjs", "sessions": "./bin/sessions.mjs" },
   "pi": { "extensions": ["./src/pi-extension.mjs"] },
   "scripts": {
     "test": "node --test test/*.test.mjs",

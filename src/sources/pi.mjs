@@ -21,6 +21,7 @@
 //   handoff turn before compaction. Calls after it, up to the compaction, are its handoff.
 //   A user message cancels it.
 
+import { observe } from "./session-state.mjs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -43,9 +44,9 @@ export const pi = {
 
   async list(dir = SESSIONS_DIR) {
     const out = [];
-    for (const d of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    for (const d of await readdir(dir, { withFileTypes: true }).catch(error => { if (error.code === 'ENOENT') return []; throw error; })) {
       if (!d.isDirectory()) continue;
-      for (const f of await readdir(join(dir, d.name)).catch(() => [])) if (f.endsWith(".jsonl")) out.push(join(dir, d.name, f));
+      for (const f of await readdir(join(dir, d.name)).catch(error => { if (error.code === 'ENOENT') return []; throw error; })) if (f.endsWith(".jsonl")) out.push(join(dir, d.name, f));
     }
     return out;
   },
@@ -64,9 +65,19 @@ export const pi = {
   },
 
   line(st, buf, start, end, emit) {
+    if (st.reader) {
+      let o;
+      try { o = JSON.parse(buf.toString("utf8", start, end)); } catch { return; }
+      return observe(st, o, emit);
+    }
     const head = buf.toString("utf8", start, Math.min(end, start + 300));
     const type = TYPE.exec(head)?.[1];
-    if (!type || type === "session") return;
+    if (!type) return;
+    if (type === 'session') {
+      const o = JSON.parse(buf.toString('utf8', start, end));
+      st.session = o.id ?? st.session;
+      return;
+    }
     let ids = HEAD_IDS.exec(head);
     const tail = ids ? null : buf.toString("utf8", Math.max(start, end - 300), end);
     if (!ids) ids = TAIL_IDS.exec(tail);

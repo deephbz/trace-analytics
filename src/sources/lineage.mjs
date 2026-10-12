@@ -12,6 +12,18 @@
 // The map keeps the last LIMIT nodes. A parent older than that resolves as a root,
 // so a branch from very far back loses its prev call.
 
+/** Full active entry path. Entry streams must not use the bounded CALL path cache. */
+export function activeBranch(entries, tip) {
+  const nodes = new Map(entries.map(e => [e.id, e]));
+  const seen = new Set();
+  const out = [];
+  for (let id = tip; id != null && nodes.has(id) && !seen.has(id); id = nodes.get(id).parent) {
+    seen.add(id);
+    out.push(nodes.get(id));
+  }
+  return out.reverse();
+}
+
 const LIMIT = 2048;
 const RANK = { other: 0, tool: 1, compaction: 2, user: 3 };
 const ROOT = [null, null, null, null];

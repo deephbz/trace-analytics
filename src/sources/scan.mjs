@@ -17,7 +17,9 @@
 // list() may set `excluded` on the returned array: { reason: file count }.
 
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
+import { chmod, mkdir, open, readFile, rename, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,9 +42,15 @@ async function loadIndex(path, key) {
   if (held?.key === key) return held;
   let idx = { key, files: {} };
   try {
-    const disk = JSON.parse(await readFile(path, "utf8"));
-    if (disk.key === key) idx = disk;
-  } catch {}
+    await chmod(path, 0o600);
+    const lines = createInterface({ input: createReadStream(path), crlfDelay: Infinity });
+    let valid = false;
+    for await (const line of lines) {
+      const row = JSON.parse(line);
+      if (row.key) valid = row.key === key;
+      else if (valid) idx.files[row.path] = row.file;
+    }
+  } catch { idx = { key, files: {} }; }
   loaded.set(path, idx);
   return idx;
 }
@@ -50,7 +58,7 @@ async function loadIndex(path, key) {
 async function readHead(fh) {
   const b = Buffer.alloc(HEAD_BYTES);
   const { bytesRead } = await fh.read(b, 0, HEAD_BYTES, 0);
-  return b.toString("latin1", 0, bytesRead);
+  return createHash('sha256').update(b.subarray(0, bytesRead)).digest('hex');
 }
 
 /** Feed complete lines in [from, to) to onLine(buf, start, end). Returns the offset after the last newline. */
@@ -77,8 +85,12 @@ async function feed(fh, from, to, onLine) {
 /** Bring the adapter's index up to date for files modified since sinceMs; return it with scan stats. */
 export async function scan(adapter, { sinceMs, cacheDir = CACHE_DIR, useCache = true } = {}) {
   const started = performance.now();
+  if (useCache) {
+    await mkdir(cacheDir, { recursive: true, mode: 0o700 });
+    await chmod(cacheDir, 0o700);
+  }
   const key = await codeKey(adapter);
-  const indexPath = join(cacheDir, `${adapter.name}.json`);
+  const indexPath = join(cacheDir, `${adapter.name}.jsonl`);
   const index = useCache ? await loadIndex(indexPath, key) : { key, files: {} };
   const paths = await adapter.list();
   const stats = { files: paths.length, excluded: paths.excluded ?? {}, inWindow: 0, reused: 0, appended: 0, full: 0, bytes: 0 };
@@ -89,7 +101,7 @@ export async function scan(adapter, { sinceMs, cacheDir = CACHE_DIR, useCache = 
   await Promise.all(
     Array.from({ length: 8 }, async () => {
       for (let path; (path = queue.shift()); ) {
-        const st = await stat(path).catch(() => null);
+        const st = await stat(path).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
         if (!st || st.mtimeMs < sinceMs) continue;
         stats.inWindow++;
         current.add(path);
@@ -121,9 +133,15 @@ export async function scan(adapter, { sinceMs, cacheDir = CACHE_DIR, useCache = 
   );
 
   if (useCache && dirty) {
-    await mkdir(cacheDir, { recursive: true });
+    await mkdir(cacheDir, { recursive: true, mode: 0o700 });
+    await chmod(cacheDir, 0o700);
     const tmp = `${indexPath}.${process.pid}.tmp`;
-    await writeFile(tmp, JSON.stringify(index));
+    const out = await open(tmp, 'w', 0o600);
+    try {
+      await out.chmod(0o600);
+      await out.write(`${JSON.stringify({ key })}\n`);
+      for (const [path, file] of Object.entries(index.files)) await out.write(`${JSON.stringify({ path, file })}\n`);
+    } finally { await out.close(); }
     await rename(tmp, indexPath);
   }
   stats.ms = Math.round(performance.now() - started);

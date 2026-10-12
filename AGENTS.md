@@ -8,6 +8,8 @@ Stage: exploration for studies; consolidation for the shared pipeline; sharing f
 Turn local coding-agent traces into evidence about latency, throughput, cache
 behavior, compaction, cost, and the user's experienced wait. Own the reusable
 methodology, framework, and complete input → analytics → report pipeline.
+Own the shared session reader and its JSON/JSONL CLI for local consumers.
+This purpose extension is review-pending wording.
 
 The analytical questions govern development:
 
@@ -33,12 +35,17 @@ hardware assumptions; do not infer private serving internals from client timings
 
 ```
 harness logs → sources → normalized records → analytics → findings → reports
+                  └── session reader CLI → consumers
                                   pipeline wires the studies
 ```
 
 - **Sources** own knowledge of harness formats, semantics, availability, lineage,
   and duplicate records. `src/sources/` reads logs and normalizes observations.
   Unlogged facts stay null. Preserve missingness instead of inventing measurements.
+  The session reader owns discovery, identity, roles, entry streams, branch selection,
+  and copy selection. Consumers own their questions and must not add harness parsers.
+  Reader text is opt-in; its rebuildable caches stay private. Keep analytics populations
+  independent from reader discovery.
 - **Records** are the small contract in `src/record.mjs`. Add a concept only when
   an analytical question needs it. Give equivalent facts equivalent semantics
   across adapters; preserve distinctions that affect interpretation.

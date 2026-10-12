@@ -16,6 +16,7 @@
 //   calls (`*magpie-c*` project dirs). Those files are left out: the gateway ledger has
 //   the calls. Subagent transcripts (<session>/subagents/) are not read yet.
 
+import { observe } from "./session-state.mjs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -29,14 +30,14 @@ export const claude = {
   source: import.meta.url,
   uses: [new URL("./lineage.mjs", import.meta.url).href],
 
-  async list(dir = PROJECTS_DIR) {
+  async list(dir = PROJECTS_DIR, includeAll = false) {
     const out = [];
     let bridge = 0;
-    for (const d of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    for (const d of await readdir(dir, { withFileTypes: true }).catch(error => { if (error.code === 'ENOENT') return []; throw error; })) {
       if (!d.isDirectory()) continue;
-      for (const f of await readdir(join(dir, d.name)).catch(() => [])) {
+      for (const f of await readdir(join(dir, d.name), { recursive: includeAll }).catch(error => { if (error.code === 'ENOENT') return []; throw error; })) {
         if (!f.endsWith(".jsonl")) continue;
-        if (d.name.includes("magpie-c")) bridge++;
+        if (!includeAll && d.name.includes("magpie-c")) bridge++;
         else out.push(join(dir, d.name, f));
       }
     }
@@ -55,6 +56,8 @@ export const claude = {
     } catch {
       return;
     }
+    if (st.reader) return observe(st, o, emit);
+    st.session = o.agentId ?? o.sessionId ?? st.session;
     const t = o.timestamp ? Date.parse(o.timestamp) : null;
     if (st.after && o.isCompactSummary) {
       emit({ kind: "patch", of: "compaction", id: st.after[0], set: { detail: { summaryChars: textLength(o.message?.content) } } });

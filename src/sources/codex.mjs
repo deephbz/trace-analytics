@@ -26,6 +26,7 @@
 // - The session role is session_meta's thread_source ("user" is "main" here), or
 //   "subagent" when the source names a parent.
 
+import { observe } from "./session-state.mjs";
 import { createHash } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -60,7 +61,7 @@ export const codex = {
   async list(dirs = CODEX_DIRS) {
     const out = [];
     for (const dir of dirs) {
-      for (const f of await readdir(dir, { recursive: true }).catch(() => [])) {
+      for (const f of await readdir(dir, { recursive: true }).catch(error => { if (error.code === 'ENOENT') return []; throw error; })) {
         if (/(^|\/)rollout-[^/]*\.jsonl$/.test(f)) out.push(join(dir, f));
       }
     }
@@ -90,6 +91,11 @@ export const codex = {
   },
 
   line(st, buf, start, end, emit) {
+    if (st.reader) {
+      let o;
+      try { o = JSON.parse(buf.toString("utf8", start, end)); } catch { return; }
+      return observe(st, o, emit);
+    }
     const head = buf.toString("utf8", start, Math.min(end, start + 300));
     const m = HEAD.exec(head);
     if (!m) return;
@@ -108,6 +114,7 @@ export const codex = {
       // A forked thread copies its parent's session_meta after its own: the first one names this thread.
       if (st.role != null) return;
       const p = JSON.parse(buf.toString("utf8", start, end)).payload ?? {};
+      st.session = p.id ?? st.session;
       const role = p.thread_source ?? (p.source && typeof p.source === "object" ? "subagent" : "user");
       st.role = role === "user" ? "main" : role;
       return;
