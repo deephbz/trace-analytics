@@ -1,59 +1,154 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" id="top">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>trace-analytics · speed</title>
 <style>
   @font-face { font-family:"Paper Mono"; src:url(/*FONT*/) format("woff2"); font-weight:100 900; font-display:block; }
-  /* Phases of a call's wall time: waiting in stone, decoding in ink, stalls in rust. Providers take hues outside that range. */
-  :root { --bg:#fbfaf7; --fg:#1d1d1b; --mute:#77756e; --line:#dedbd2;
-    --ttftFloor:#cdc7b9; --ttftVariance:#a39b8b; --decoding:#2e2e2b; --stallDuring:#b8574a; --stallAfter:#e6b9ae; --unsplit:#2e2e2b;
-    --on-ttftFloor:#1d1d1b; --on-ttftVariance:#1d1d1b; --on-decoding:#fbfaf7; --on-stallDuring:#fbfaf7; --on-stallAfter:#1d1d1b; --on-unsplit:#fbfaf7;
-    --held:#b8574a; --reason:#c98a3a; --plain:#3d6fa8; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#191917; --fg:#e8e6df; --mute:#95938b; --line:#3a3934;
-    --ttftFloor:#4a463f; --ttftVariance:#6e685c; --decoding:#e8e6df; --unsplit:#e8e6df; --on-unsplit:#191917; --on-ttftFloor:#e8e6df; --on-ttftVariance:#e8e6df; --on-decoding:#191917; } }
-  body { margin:0; padding:24px 32px 64px; background:var(--bg); color:var(--fg); font:13px/1.5 "Paper Mono", ui-monospace, monospace; max-width:1180px; }
-  button, input, select { font-family:inherit; }
-  h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:15px; margin:32px 0 6px; } .m { color:var(--mute); }
-  .tabs button { font:inherit; border:1px solid var(--line); background:none; color:var(--fg); padding:4px 10px; margin:0 6px 6px 0; border-radius:4px; cursor:pointer; }
+  /* Tactical telemetry: report values stay still; red identifies delay. */
+  :root { color-scheme:dark; --bg:#0a0a0a; --panel:#111; --fg:#eaeaea; --mute:#aaa; --line:#383838;
+    --ttftFloor:#777; --ttftVariance:#aaa; --decoding:#eaeaea; --stallDuring:#ff3b3b; --stallAfter:#ff9999; --unsplit:#eaeaea;
+    --on-ttftFloor:#0a0a0a; --on-ttftVariance:#0a0a0a; --on-decoding:#0a0a0a; --on-stallDuring:#0a0a0a; --on-stallAfter:#0a0a0a; --on-unsplit:#0a0a0a;
+    --held:#ff3b3b; --reason:#999; --plain:#eaeaea; --ease-out:cubic-bezier(.23,1,.32,1); }
+  /* This instrument retains a dark substrate in either system appearance. */
+  @media (prefers-color-scheme:light) { :root { --mute:#b8b8b8; --line:#454545; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.5 "Paper Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums; }
+  button,input,select { font:inherit; border-radius:0; }
+  button,a,summary,select { -webkit-tap-highlight-color:transparent; }
+  a { color:inherit; text-decoration:none; }
+  button,summary,select { cursor:pointer; }
+  :focus-visible { outline:2px solid var(--held); outline-offset:4px; }
+  ::selection { background:var(--held); color:var(--bg); }
+  .shell { max-width:1680px; margin:auto; border-inline:1px solid var(--line); }
+  .mast { display:grid; grid-template-columns:1fr auto; gap:1px; background:var(--line); }
+  .mast > * { background:var(--bg); padding:18px 24px; }
+  .brand { display:flex; gap:24px; align-items:center; }
+  .brand strong { text-transform:uppercase; }
+  nav { display:flex; gap:24px; }
+  nav a:hover { text-decoration:underline; text-underline-offset:5px; }
+  .status { min-width:280px; display:grid; gap:4px; }
+  .status b { font-weight:400; }
+  .status b::before { content:""; display:inline-block; width:7px; height:7px; background:var(--fg); margin-right:8px; }
+  .status[data-state="failed"] b::before { background:var(--held); }
+  .m { color:var(--mute); }
+  .intro { display:grid; grid-template-columns:1fr 1fr; align-items:end; gap:32px; padding:32px 24px 24px; }
+  h1 { font:900 clamp(48px,7vw,100px)/.88 Arial,Helvetica,sans-serif; letter-spacing:-.055em; text-transform:uppercase; margin:0; }
+  .intro p { margin:0; max-width:55ch; }
+  #head { padding:16px 24px; border-block:1px solid var(--line); font-size:12px; overflow-wrap:anywhere; }
+  .instruments { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1px; background:var(--line); border-bottom:1px solid var(--line); }
+  .instrument { min-width:0; border:0; padding:22px 24px; background:var(--bg); color:var(--fg); text-align:left; display:grid; gap:8px; }
+  .instrument:hover { background:var(--panel); }
+  .instrument .route-name { overflow-wrap:anywhere; }
+  .instrument .speed { font:900 clamp(80px,10vw,160px)/.95 Arial,Helvetica,sans-serif; letter-spacing:-.065em; display:block; }
+  .instrument .speed small { font:12px/1.4 "Paper Mono",monospace; letter-spacing:0; margin-left:12px; }
+  .instrument .range { display:flex; flex-wrap:wrap; justify-content:space-between; gap:4px 16px; color:var(--mute); font-size:12px; }
+  section { padding:32px 24px; border-bottom:1px solid var(--line); scroll-margin-top:16px; }
+  .section-head { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-bottom:20px; align-items:start; }
+  h2 { font:800 28px/1.1 Arial,Helvetica,sans-serif; letter-spacing:-.03em; margin:0; }
+  .section-head p { margin:0; }
+  .method { margin:12px 0 20px; color:var(--mute); max-width:100ch; }
+  .method summary { width:fit-content; color:var(--fg); padding:8px 0; }
+  .notes { font-size:12px; color:var(--mute); }
+  .chart-scroll { overflow-x:auto; overscroll-behavior-x:contain; padding:6px 0 12px; }
+  #budget .chart-scroll svg,#season .chart-scroll svg { width:88%; min-width:880px; }
+  svg { display:block; overflow:visible; }
+  svg text { fill:var(--fg); font-size:11px; }
+  svg .m { fill:var(--mute); } svg .ax { stroke:var(--line); }
+  .readout { min-height:3.5em; font-size:12px; padding:12px; background:var(--panel); border-left:3px solid var(--held); margin-bottom:16px; overflow-wrap:anywhere; }
+  .take { font-size:13px; margin:0 0 16px; max-width:100ch; }
+  .take .lk { cursor:default; }
+  .take .lk.on { text-decoration:underline; text-underline-offset:4px; }
+  svg [data-f] { transition:opacity 180ms var(--ease-out); }
+  svg.focus [data-f]:not(.on) { opacity:.18; }
+  .ctl { display:flex; flex-wrap:wrap; gap:12px; margin:20px 0; }
+  .ctl label { display:grid; gap:6px; color:var(--mute); font-size:12px; }
+  .ctl select { min-height:44px; max-width:100%; padding:8px 32px 8px 12px; border:1px solid var(--line); background:var(--panel); color:var(--fg); }
+  .scroll-hint { display:none; color:var(--mute); font-size:12px; margin:8px 0; }
+  details.route { padding:32px 24px; border-bottom:1px solid var(--line); }
+  details.route > summary { font:800 28px/1.1 Arial,Helvetica,sans-serif; letter-spacing:-.03em; }
+  .route-description { margin:12px 0 0; }
+  .route-select { display:none; }
+  .tabs { display:flex; flex-wrap:wrap; gap:1px; margin:24px 0 0; }
+  .tabs button { border:1px solid var(--line); background:var(--bg); color:var(--fg); padding:12px; }
   .tabs button.on { background:var(--fg); color:var(--bg); }
-  .cards { display:grid; grid-template-columns:repeat(5, 1fr); gap:12px; margin-top:12px; }
-  .card { border:1px solid var(--line); border-radius:6px; padding:10px 12px; }
-  .card b { font-size:22px; display:block; } .card .warn { color:var(--held); } .card b .warn { font-size:16px; }
-  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:24px; }
-  svg { display:block; overflow:visible; } svg text { fill:var(--fg); font-size:11px; } svg .m { fill:var(--mute); } svg .ax { stroke:var(--line); }
-  .key span { display:inline-block; width:10px; height:10px; border-radius:2px; margin:0 4px 0 12px; vertical-align:-1px; }
-  table { border-collapse:collapse; font-size:12.5px; } td, th { padding:2px 8px; text-align:right; } td:first-child, th:first-child { text-align:left; }
-  .notes { font-size:12.5px; color:var(--mute); max-width:900px; }
-  code { font-size:12px; }
-  /* Motion: short, ease-out, opacity only; it links views and marks change, never decorates data. */
-  :root { --ease-out:cubic-bezier(0.23, 1, 0.32, 1); interpolate-size:allow-keywords; }
-  .readout { height:3em; font-size:12px; overflow:hidden; }
-  .take { font-size:12.5px; margin:2px 0; } .take .lk { cursor:default; border-bottom:1px dotted transparent; transition:border-color 150ms ease; } .take .lk.on { border-bottom-color:currentColor; }
-  svg [data-f] { transition:opacity 150ms ease; }
-  svg.focus [data-f]:not(.on) { opacity:0.15; }
-  .fresh { animation:fresh 250ms var(--ease-out); } @keyframes fresh { from { opacity:0; } }
-  details.route::details-content { block-size:0; opacity:0; overflow:clip; transition:block-size 250ms var(--ease-out), opacity 250ms var(--ease-out), content-visibility 250ms allow-discrete; }
-  details.route[open]::details-content { block-size:auto; opacity:1; }
-  @media (prefers-reduced-motion: reduce) { details.route::details-content { transition:opacity 150ms ease, content-visibility 150ms allow-discrete; } }
-  .ctl { margin:6px 0 8px; } .ctl select { font-size:12.5px; margin-right:12px; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:4px; padding:2px 4px; }
-  details.route > summary { cursor:pointer; font-size:15px; font-weight:700; margin:32px 0 6px; } details.route > summary .m { font-weight:400; font-size:12.5px; }
+  .tabs button.on .m { color:#444; }
+  .tabs button:hover { text-decoration:underline; }
+  .cards { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:1px; background:var(--line); margin:16px 0 1px; }
+  .card { padding:16px; background:var(--panel); min-width:0; font-size:12px; }
+  .card b { font:800 26px/1.2 Arial,Helvetica,sans-serif; display:block; margin:12px 0; }
+  .warn { color:var(--held); }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line); }
+  .grid2 > div { background:var(--bg); min-width:0; padding:24px 16px; }
+  .grid2 h2 { font-size:22px; margin:0 0 16px; }
+  .grid2 .notes,.key { margin-bottom:16px; }
+  .key { font-size:12px; }
+  .key span { display:inline-block; width:10px; height:10px; margin:0 4px 0 12px; }
+  .key span:first-child { margin-left:0; }
+  #prov { max-width:105ch; font-size:13px; overflow-wrap:anywhere; }
+  #prov li { margin:12px 0; }
+  code { font:inherit; color:var(--fg); }
+  .footer { display:flex; justify-content:space-between; padding:24px; color:var(--mute); }
+  @media(max-width:800px) {
+    .mast { grid-template-columns:1fr; } .brand { justify-content:space-between; gap:12px; }
+    nav { gap:16px; } .mast > * { padding:16px; } .status { grid-template-columns:1fr 1fr; min-width:0; }
+    .intro { grid-template-columns:1fr; padding:28px 16px 20px; gap:20px; } .intro p { max-width:44ch; }
+    #head { padding:16px; }
+    .instruments { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .instrument { padding:20px 16px; } .instrument .speed { font-size:clamp(56px,12vw,96px); }
+    .section-head { grid-template-columns:1fr; gap:12px; }
+    section,details.route { padding:28px 16px; }
+    .cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .tabs button { display:none; }
+    .route-select { display:grid; gap:8px; width:100%; }
+    .route-select select { width:100%; min-width:0; height:44px; padding:8px; background:var(--panel); color:var(--fg); border:1px solid var(--line); }
+    .grid2 { grid-template-columns:1fr; } .scroll-hint { display:block; }
+    .ctl { display:grid; grid-template-columns:minmax(0,1fr); } .ctl label { min-width:0; }
+  }
+  @media(max-width:480px) {
+    .brand { flex-wrap:wrap; } .instruments { grid-template-columns:1fr; }
+    .instrument { grid-template-columns:1fr auto; column-gap:16px; }
+    .instrument .route-name { grid-column:1/-1; }
+    .instrument .speed { font-size:86px; }
+    .instrument .speed small { display:block; margin:6px 0 0; }
+    .instrument .range { display:grid; align-content:center; text-align:right; max-width:150px; }
+    .grid2 > div { padding:24px 0; }
+    .cards { grid-template-columns:1fr; } .card { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .card b { margin:0; } .card > span:last-child { grid-column:1/-1; }
+    .status { font-size:12px; } .footer { padding:16px; }
+  }
+  @media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; } }
 </style>
 </head>
 <body>
-<h1>trace-analytics · speed</h1>
+<main class="shell">
+<header class="mast">
+  <div class="brand"><strong>trace-analytics / speed</strong><nav aria-label="Report"><a href="#time">Time</a><a href="#hours">Hours</a><a href="#routebox">Diagnosis</a></nav></div>
+  <div class="status" id="status"><b id="live-state">Connecting</b><span class="m" id="poll-age">Waiting for report</span></div>
+</header>
+<div class="intro"><h1>Route speed.</h1><p>Output per second, from request to response.<br>Compare the median. Inspect what made you wait.</p></div>
 <div class="m" id="head"></div>
+<div class="instruments" id="instruments" aria-label="Route median speeds"></div>
 
-<h2>Where call time goes</h2>
-<div class="notes">Routes from fastest to slowest end-to-end speed. Each bar is the wall time of a call, request to end of response, split into its phases in time order and summed over the route's calls. TTFT floor: TTFT the context explains. TTFT variance: TTFT above the floor. Decoding: streaming time. Stall during decoding: pauses of 500 ms or more after the first token, which include hidden reasoning. Stall after last token: time from the last streamed update to the end of the response.</div>
+<section id="time">
+<div class="section-head"><h2>Where call time goes</h2><p class="m">Fastest to slowest. Compare output speed against the time spent waiting, decoding, and stalled.</p></div>
+<details class="method"><summary>How to read the time budget</summary><div class="notes">Routes from fastest to slowest end-to-end speed. Each bar is the wall time of a call, request to end of response, split into its phases in time order and summed over the route's calls. TTFT floor: TTFT the context explains. TTFT variance: TTFT above the floor. Decoding: streaming time. Stall during decoding: pauses of 500 ms or more after the first token, which include hidden reasoning. Stall after last token: time from the last streamed update to the end of the response.</div></details>
+<p class="scroll-hint">Scroll the chart horizontally to inspect all phases →</p>
 <div id="budget"></div>
+</section>
 
-<h2>Speed by hour and day</h2>
-<div class="notes">Each cell is one UTC hour of one UTC day: the median over its calls. Bands mark UTC hours named by the region whose working day dominates them. Right: each day's medians per region band, so a trend across days shows apart from the hour of day. Bottom: each hour pooled over all days, p50 line and p25–p75 band. <i>Relative speed</i> divides a call's end-to-end speed by its route's p50, so pooled routes do not show a route-mix shift; it does not control context or output length. <i>TTFT variance</i> is TTFT above the route's context floor. Cells under 5 calls and day-band points under 20 calls are left out.</div>
-<div class="ctl"><select id="sscope"></select><select id="smetric"></select></div>
+<section id="hours">
+<div class="section-head"><h2>Speed by hour and day</h2><p class="m">Find the slow hours. Compare the same slice across the heatmap, daily medians, and hour profile.</p></div>
+<details class="method"><summary>Population, time zones, and metrics</summary><div class="notes">Each cell is one UTC hour of one UTC day: the median over its calls. Bands mark UTC hours named by the region whose working day dominates them. Right: each day's medians per region band, so a trend across days shows apart from the hour of day. Bottom: each hour pooled over all days, p50 line and p25–p75 band. <i>Relative speed</i> divides a call's end-to-end speed by its route's p50, so pooled routes do not show a route-mix shift; it does not control context or output length. <i>TTFT variance</i> is TTFT above the route's context floor. Cells under 5 calls and day-band points under 20 calls are left out.</div></details>
+<div class="ctl"><label>Route scope<select id="sscope"></select></label><label>Measurement<select id="smetric"></select></label></div>
+<p class="scroll-hint">Scroll the chart horizontally for all 24 hours →</p>
 <div id="season"></div>
+</section>
 
-<details class="route" id="routebox"><summary>Route diagnosis <span class="m">per-route cards, TTFT fit, decode, daily medians, stalls</span></summary>
+<details class="route" id="routebox"><summary>Route diagnosis</summary>
+<p class="m route-description">Per-route cards, TTFT fit, decode, daily medians, stalls.</p>
 <div class="tabs" id="tabs"></div>
 <div class="cards" id="cards"></div>
 
@@ -67,8 +162,10 @@
 </div>
 </details>
 
-<h2>Definitions and provenance</h2>
-<div class="notes" id="prov"></div>
+<section><h2>Definitions and provenance</h2>
+<div class="notes" id="prov"></div></section>
+<footer class="footer"><span>trace-analytics / speed</span><a href="#top">Back to top ↑</a></footer>
+</main>
 
 <script>
 // A written report.html embeds its report; the live view (--serve) leaves it null and polls.
@@ -81,18 +178,42 @@ const s1 = (ms) => ms == null ? "–" : (ms / 1000).toFixed(1) + " s";
 const pct = (x) => x == null ? "–" : Math.round(x * 100) + "%";
 const f0 = (x) => x == null ? "–" : Math.round(x).toLocaleString("en-US");
 const P = { t:0, route:1, ctx:2, ttft:3, ttftFloor:4, decode:5, span:6, stall:7, stalls:8, held:9, reasoning:10, out:11, e2e:12 };
-let sel = 0, added = {};
+let sel = 0, added = {}, lastPoll = null, pollFailed = false;
 
 function head() {
-  const net = Object.values(added).reduce((t, n) => t + n, 0);
-  const live = REPORT ? "" : ` · live, refreshed ${new Date().toLocaleTimeString()}${net > 0 ? ` · +${net} calls since last refresh` : ""}`;
+  const live = REPORT ? " · written snapshot" : " · live window";
   const by = R.sources.map((s) => `${s.adapter} ${s.calls.toLocaleString()}`).join(", ");
   $("head").textContent = `${R.window.since.slice(0,16)} → ${R.window.until.slice(0,16)} UTC · ${R.source.calls.toLocaleString()} calls (${by}) · code ${R.codeVersion}${live}`;
 }
 
-// Provider hues stay clear of the phase colours (stone, ink, rust).
-const PROVIDER_HUES = { magpie: "#6c4fc4", "openai-codex": "#0f8f7f", codex: "#c2408a", gateway: "#b08900", anthropic: "#2f6fd6" };
-const SPARE_HUES = ["#4d7d1e", "#2f6fd6", "#6b6b66"];
+function liveStatus() {
+  const net = Object.values(added).reduce((t, n) => t + n, 0);
+  $("status").dataset.state = pollFailed ? "failed" : "ready";
+  $("live-state").textContent = REPORT ? "Written snapshot" : pollFailed ? "Refresh failed" : "Live / 30 s poll";
+  $("poll-age").textContent = REPORT ? "No polling" : lastPoll == null ? "Waiting for report" : `${Math.floor((Date.now() - lastPoll) / 1000)} s since poll · ${net >= 0 ? "+" : ""}${net} calls since last refresh`;
+}
+
+function instruments() {
+  const ranked = [...R.routes].sort((a, b) => b.summary.e2e.p50 - a.summary.e2e.p50);
+  const extremes = ranked.length > 1 ? [ranked[0], ranked.at(-1)] : ranked;
+  $("instruments").innerHTML = extremes.map((r, i) =>
+    `<button class="instrument" data-route="${R.routes.indexOf(r)}" aria-label="Diagnose ${r.route}">
+      <span class="route-name"><span class="m">${i ? "Lowest" : "Highest"} route median</span><br>${r.route}</span>
+      <span class="speed">${f0(r.summary.e2e.p50)}<small>tok/s · p50</small></span>
+      <span class="range"><span>p25 ${f0(r.summary.e2e.p25)} / p75 ${f0(r.summary.e2e.p75)}</span><span>${f0(r.summary.calls)} calls</span><span>Diagnose ↗</span></span>
+    </button>`).join("");
+  $("instruments").querySelectorAll("button").forEach((button) => button.onclick = () => {
+    sel = +button.dataset.route;
+    render();
+    $("routebox").open = true;
+    $("routebox").scrollIntoView();
+    $("routebox").querySelector("summary").focus({ preventScroll:true });
+  });
+}
+
+// Provider names remain explicit; neutral tones reserve red for delay.
+const PROVIDER_HUES = { magpie:"#eaeaea", "openai-codex":"#bbb", codex:"#d2d2d2", gateway:"#aaa", anthropic:"#ccc" };
+const SPARE_HUES = ["#eaeaea", "#bbb", "#ccc"];
 const providerOf = (route) => route.split("/")[0];
 const modelOf = (route) => route.split("/").slice(1).join("/");
 function hue(provider) {
@@ -161,7 +282,7 @@ function budget() {
     kx += w;
   }
   const idle = "Hover a route to isolate it, or a phase in the key to compare its share across routes.";
-  $("budget").innerHTML = `<div class="readout m" data-idle="${idle}">${idle}</div><svg viewBox="0 0 ${W} ${Math.max(H, ky + 14) + 8}" width="100%">${g}</svg>`;
+  $("budget").innerHTML = `<div class="readout m" aria-live="polite" data-idle="${idle}">${idle}</div><div class="chart-scroll" tabindex="0" role="region" aria-label="Route time budget chart"><svg viewBox="0 0 ${W} ${Math.max(H, ky + 14) + 8}" width="100%">${g}</svg></div>`;
   linkFocus("budget");
 }
 
@@ -178,18 +299,27 @@ function linkFocus(id) {
     for (const m of root.querySelectorAll(".lk")) m.classList.toggle("on", !!q && m.dataset.q === f.q);
     out.textContent = f?.t ?? out.dataset.idle;
   };
-  root.onmouseover = (e) => {
+  const focusMark = (e) => {
     const m = e.target.closest("[data-q],[data-f]");
     focused[id] = m && { q: m.dataset.q ?? m.dataset.f, t: m.dataset.t };
     apply(focused[id]);
   };
+  root.querySelectorAll("[data-t]").forEach((mark) => {
+    mark.setAttribute("tabindex", "0");
+    mark.setAttribute("aria-label", mark.dataset.t);
+  });
+  root.onmouseover = focusMark;
+  root.onfocusin = focusMark;
   root.onmouseleave = () => apply((focused[id] = null));
+  root.onfocusout = (e) => { if (!root.contains(e.relatedTarget)) apply((focused[id] = null)); };
   if (focused[id]) apply(focused[id]);
 }
 
 function tabs() {
-  $("tabs").innerHTML = R.routes.map((r, i) => `<button class="${i === sel ? "on" : ""}" data-i="${i}"><span style="color:${hue(providerOf(r.route))}">●</span> ${r.route} <span class="m">${r.summary.calls}</span></button>`).join("");
+  $("tabs").innerHTML = `<label class="route-select">Diagnosis route<select id="diagnosis-route">${R.routes.map((r, i) => `<option value="${i}"${i === sel ? " selected" : ""}>${r.route} (${r.summary.calls})</option>`).join("")}</select></label>`
+    + R.routes.map((r, i) => `<button class="${i === sel ? "on" : ""}" data-i="${i}">${r.route} <span class="m">${r.summary.calls}</span></button>`).join("");
   $("tabs").querySelectorAll("button").forEach((b) => b.onclick = () => { sel = +b.dataset.i; render(); });
+  $("diagnosis-route").onchange = (e) => { sel = +e.target.value; render(); $("diagnosis-route").focus(); };
 }
 
 function cards(r) {
@@ -224,7 +354,7 @@ function scatter(r, pts) {
   let g = axes(W, H, m, xt, yt, "context tokens (cached + uncached)", "TTFT (log)");
   for (const p of pts) {
     const c = p[P.held] ? "--held" : p[P.reasoning] ? "--reason" : "--plain";
-    if (p[P.ttft] >= 10 ** ylo) g += `<circle cx="${X(p[P.ctx]).toFixed(1)}" cy="${Y(p[P.ttft]).toFixed(1)}" r="1.6" fill="${css(c)}" fill-opacity="0.35"/>`;
+    if (p[P.ttft] >= 10 ** ylo) g += `<circle cx="${X(p[P.ctx]).toFixed(1)}" cy="${Y(p[P.ttft]).toFixed(1)}" r="1.6" fill="${css(c)}" fill-opacity="0.6"/>`;
   }
   const f = r.fit; let d = "";
   for (let i = 0; i <= 60; i++) { const c = (xmax * i) / 60; d += `${i ? "L" : "M"}${X(c).toFixed(1)},${Y(Math.exp(f.a + f.b * c)).toFixed(1)}`; }
@@ -243,7 +373,7 @@ function hist(el, values, { W = 540, H = 260, log = false, bins = 30, xl, fmt, c
   const xt = []; for (let i = 0; i <= 5; i++) { const t = lo + ((hi - lo) * i) / 5; xt.push([X(t), fmt(inv(t))]); }
   let g = axes(W, H, m, xt, [[Y(cmax), pct(cmax / values.length)]], xl, "share of calls");
   c.forEach((n, i) => g += `<rect x="${X(lo + i * w) + 0.5}" y="${Y(n)}" width="${Math.max(0, X(lo + w) - X(lo) - 1)}" height="${H - m.b - Y(n)}" fill="${css(color)}"/>`);
-  for (const [v, s] of marks) if (v != null) g += `<line x1="${X(tr(v))}" y1="${m.t}" x2="${X(tr(v))}" y2="${H - m.b}" stroke="${css("--fg")}" stroke-dasharray="3 3"/><text x="${X(tr(v)) + 4}" y="${m.t + 10}">${s}</text>`;
+  for (const [v, s] of marks) if (v != null) g += `<line x1="${X(tr(v))}" y1="${m.t}" x2="${X(tr(v))}" y2="${H - m.b}" stroke="${css("--fg")}" stroke-dasharray="3 3"/><text x="${X(tr(v)) + 4}" y="${m.t + 10}" stroke="${css("--bg")}" stroke-width="3" paint-order="stroke">${s}</text>`;
   el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%">${g}</svg>`;
 }
 
@@ -307,7 +437,8 @@ const SM = {
   e2e: ["end-to-end speed p50", 3, "e2e", (x) => f0(x) + " tok/s", true, false],
   ttft: ["TTFT p50", 5, "ttft", s1, false, false],
 };
-const REGION_HUES = { asia: "#0f8f7f", europe: "#6c4fc4", us: "#b08900" };
+const REGION_HUES = { asia:"#eaeaea", europe:"#bbb", us:"#999" };
+const REGION_DASH = { asia:"", europe:"5 3", us:"2 3" };
 const MIN_CELL = 5, MIN_BAND = 20;
 let sScope = "all", sMetric = "rel";
 
@@ -393,7 +524,7 @@ function season() {
       path += `${path ? "L" : "M"}${x.toFixed(1)},${y}`;
       dots += `<circle cx="${x}" cy="${y}" r="3.5" fill="${REGION_HUES[k]}" data-f="d${i} k-${k} dk${i}-${k}" data-q="dk${i}-${k}" data-t="${ymd(d)} ${l}: ${label} ${fmt(c[ci])} · ${c[2]} calls"/>`;
     });
-    g += `<path d="${path}" fill="none" stroke="${REGION_HUES[k]}" stroke-opacity="0.45" stroke-width="1.2" data-f="k-${k}"/>` + dots;
+    g += `<path d="${path}" fill="none" stroke="${REGION_HUES[k]}" stroke-opacity="0.9" stroke-width="1.5" stroke-dasharray="${REGION_DASH[k]}" data-f="k-${k}"/>` + dots;
   }
   // Bottom margin: each hour pooled over days, p50 with p25–p75.
   const pv = [centre, ...hs.flatMap((h) => [h[hk][0], h[hk][2]])], plo = Math.min(...pv), phi = Math.max(...pv);
@@ -417,28 +548,35 @@ function season() {
     const v = centre * 2 ** (upGood ? z : -z), [col, a] = tone(v);
     g += `<rect x="${kx + i * 52}" y="${ky + 8}" width="50" height="14" fill="${col}" fill-opacity="${(0.08 + 0.85 * a).toFixed(2)}"/><text class="m" x="${kx + i * 52 + 25}" y="${ky + 36}" text-anchor="middle" font-size="10">${fmt(v)}</text>`;
   });
-  g += `<text class="m" x="${kx}" y="${ky + 54}" font-size="10">blue faster · rust slower · clamped at 2×</text>`;
-  $("season").innerHTML = `<div class="take">${take}</div><div class="readout m" data-idle="${idle}">${idle}</div><svg viewBox="0 0 ${W} ${H}" width="100%">${g}</svg>`;
+  g += `<text class="m" x="${kx}" y="${ky + 54}" font-size="10">white better · red worse · clamped at 2×</text>`;
+  $("season").innerHTML = `<div class="take">${take}</div><div class="readout m" aria-live="polite" data-idle="${idle}">${idle}</div><div class="chart-scroll" tabindex="0" role="region" aria-label="Hourly and daily speed chart"><svg viewBox="0 0 ${W} ${H}" width="100%">${g}</svg></div>`;
   linkFocus("season");
 }
 
-function all() { head(); budget(); season(); prov(); render(); }
+function all() { head(); liveStatus(); instruments(); budget(); season(); prov(); render(); }
 
 async function poll() {
   try {
     const route = R?.routes[sel]?.route, before = R && Object.fromEntries(R.routes.map((r) => [r.route, r.summary.calls]));
-    R = await (await fetch("report.json", { cache: "no-store" })).json();
+    const response = await fetch("report.json", { cache:"no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    R = await response.json();
+    lastPoll = Date.now();
+    pollFailed = false;
+    $("status").removeAttribute("title");
     // Net change per route since the last refresh; the window rolls, so old calls also leave.
     added = before ? Object.fromEntries(R.routes.filter((r) => r.route in before).map((r) => [r.route, r.summary.calls - before[r.route]])) : {};
     sel = Math.max(0, R.routes.findIndex((r) => r.route === route));
     all();
   } catch (e) {
-    $("head").textContent += ` · refresh failed: ${e.message}`;
+    pollFailed = true;
+    liveStatus();
+    $("status").title = `Refresh failed: ${e.message}`;
   }
 }
 
 if (REPORT) all();
-else { poll(); setInterval(() => document.hidden || poll(), POLL_MS); }
+else { poll(); setInterval(() => document.hidden || poll(), POLL_MS); setInterval(liveStatus, 1000); }
 </script>
 </body>
 </html>
