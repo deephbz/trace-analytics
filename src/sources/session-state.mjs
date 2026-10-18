@@ -91,3 +91,39 @@ export function observe(st, o, emit) {
   if (s.text) r.text = kind === 'tool' && s.text !== 'full' ? '' : text;
   emit(r);
 }
+
+// Host identity. A Session's Host is configured, never derived from the file path, so a
+// local copy of another Host's Session keeps that Host's identity.
+// A Host name is one ref segment: no whitespace, '/', or '#'.
+export function checkHost(host = process.env.TRACE_ANALYTICS_HOST || 'local') {
+  if (typeof host !== 'string' || !/^[^\s/#]+$/.test(host)) throw new Error(`Invalid host: ${JSON.stringify(host)}`);
+  return host;
+}
+export const sessionRef = (host, session) => `${host}/${session}`;
+export const entryRef = (host, session, entry) => `${host}/${session}#${entry}`;
+export const isScratch = (cwd) => cwd == null ? null : /^\/(?:private\/)?(?:tmp(?:\/|$)|var\/folders(?:\/|$))/.test(cwd);
+
+/**
+ * SESSION record of one file's state and its selected entry stream (src/record.mjs).
+ * ancestry: { entries, branch } of ENTRY observations. Cross-file facts (fork-parent
+ * paths, worker-child leadership, copy selection) stay with the catalog.
+ */
+export function sessionRecord(harness, s, ancestry, { version, host, path, text }) {
+  const id = `${harness}:${s.native}`;
+  const humans = ancestry.entries.filter(r => r.entryKind === 'human');
+  const replies = ancestry.entries.filter(r => r.entryKind === 'assistant' && r.text?.trim());
+  const parent = s.parent && !s.parent.includes('/') ? `${harness}:${s.parent}` : null;
+  const record = { reader: version, id, host, ref: sessionRef(host, id), harness, session: s.native,
+    role: s.leader ? 'leader' : s.worker || (parent && !humans.length) ? 'worker' : s.automated ? 'automated' : 'solo',
+    parent, cwd: s.cwd, scratch: isScratch(s.cwd),
+    path, started: s.started, updated: s.updated, archived: s.archived, branch: ancestry.branch, humanTurns: humans.length,
+    resume: { cwd: s.cwd, argv: harness === 'pi' ? ['pi', '--session', s.native] : harness === 'claude' ? ['claude', '--resume', s.native] : ['codex', 'resume', s.native] } };
+  if (text) Object.assign(record, { title: s.title, firstAsk: humans[0]?.text ?? null,
+    lastAsk: humans.at(-1)?.text ?? null, lastReply: replies.at(-1)?.text ?? null });
+  return { record, humans, replies };
+}
+
+/** ENTRY record of one observation. */
+export const entryRecord = (r, { version, host, text }) => ({ reader: version, session: r.session, host,
+  ref: entryRef(host, r.session, r.id), id: r.id, parent: r.parent, t: r.t, kind: r.entryKind, name: r.name,
+  ...(text ? { text: r.text } : {}) });

@@ -62,7 +62,7 @@ async function readHead(fh) {
 }
 
 /** Feed complete lines in [from, to) to onLine(buf, start, end). Returns the offset after the last newline. */
-async function feed(fh, from, to, onLine) {
+export async function feed(fh, from, to, onLine) {
   let pos = from;
   let carry = Buffer.alloc(0);
   let consumed = from;

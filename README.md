@@ -47,6 +47,10 @@ UTC ISO minute, id, role, human turns, cwd, and title with `--text`. Each Sessio
 has a shell-quoted `cd CWD && ARGV` resume line. Search tables show time,
 Session, kind, and snippet.
 Every output record carries `reader`. Times use epoch milliseconds.
+SESSION and ENTRY records carry `host` and `ref` (`<host>/<id>`, `<host>/<id>#<entry>`).
+The Host comes from `--host`, then `TRACE_ANALYTICS_HOST`, then `local`, never from the path.
+Library consumers can follow one live Pi Session with `openPiSession(path, { host })`
+from `trace-analytics/transcript`: `refresh()` parses only appended bytes.
 `--since` and `--until` accept absolute dates or nonnegative integer spans:
 `Nm`, `Nh`, `Nd`, `Nw`. A span subtracts minutes, hours, days, or weeks from
 one shared current-time anchor. For example, `sessions --since 7d` selects
