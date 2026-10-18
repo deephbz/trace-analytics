@@ -80,6 +80,8 @@
 
 // SESSION: one harness Session. id is <harness>:<native id>; session is native.
 //   reader: protocol version on every CLI record; harness: pi | claude | codex.
+//   host: the reading Host's configured name (option, --host, TRACE_ANALYTICS_HOST, or
+//   "local"); never derived from the path, so a copy keeps its Host. ref: <host>/<id>.
 //   role: solo | leader | worker | automated (provisional inference over the history).
 //   parent: Session id or null; cwd, path: logged cwd and selected source file.
 //   scratch: cwd is under a temporary directory (null if cwd is unknown).
@@ -90,11 +92,22 @@
 //   Pi session_info title labels the whole Session; it is exempt from branch scope.
 //   Session windows include spans with updated >= since and started < until.
 // ENTRY: session is the SESSION id; id and parent identify source entries.
+//   host as for SESSION; ref: <host>/<session>#<id>, e.g. local/pi:abc#e1.
 //   t: epoch ms or null; kind: human | injected | assistant | tool | compaction |
 //   branch-summary | other; name: tool name or null. Only with text opt-in: text.
 //   Pi and Claude walk from the last appended entry to the root without a depth cap.
 //   Claude compact_boundary uses logicalParentUuid when parentUuid is null.
 //   Codex uses file order; unlabelled entries use line:<ordinal> ids.
+// TranscriptEntry (sources/transcript.mjs, Pi only; text by construction): one active-branch
+//   entry with ENTRY's ref, id, parent, t, kind, name, plus when logged: role (message
+//   role); model, provider, usage {input, output, cacheRead, cacheWrite, cost} on assistant
+//   messages; blocks of {type:"text",text} | {type:"thinking",text} |
+//   {type:"toolCall",id,name,args} | {type:"image",mimeType} (no image bytes) on non-tool
+//   messages; result {callId, isError, text: text parts joined by newline} on tool results;
+//   customType and text on custom / custom_message; summary on compaction / branch summary.
+//   refresh() -> {reset, added}: reset means added is the whole active branch (first read,
+//   shrunk or replaced file, or the tip moved to another branch); otherwise added is the
+//   appended entries that extend the active branch.
 // SEARCH: session, entry, t identify a match; kind: human | title | reply.
 //   snippet carries text. Every whitespace-separated query term must match the same
 //   record, case-insensitive. Title entry/time can be null; null times sort last.

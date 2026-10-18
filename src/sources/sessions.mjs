@@ -10,7 +10,7 @@ import { claude } from './claude.mjs';
 import { codex } from './codex.mjs';
 import { scan, CACHE_DIR } from './scan.mjs';
 import { activeBranch } from './lineage.mjs';
-import { sessionState } from './session-state.mjs';
+import { sessionState, sessionRecord, entryRecord, sessionRef, checkHost, isScratch } from './session-state.mjs';
 import { READER_VERSION } from '../record.mjs';
 
 const run = promisify(execFile);
@@ -33,7 +33,8 @@ async function codexMetadata(path) {
 }
 
 export async function readSessions({ text = false, sources = adapters, cacheDir = join(CACHE_DIR, 'reader'),
-  useCache = true, paths, codexDb = join(homedir(), '.codex', 'state_5.sqlite') } = {}) {
+  useCache = true, paths, host, codexDb = join(homedir(), '.codex', 'state_5.sqlite') } = {}) {
+  host = checkHost(host);
   if (useCache) { await mkdir(cacheDir, { recursive: true, mode: 0o700 }); await chmod(cacheDir, 0o700); }
   const sessions = new Map();
   const streams = new Map();
@@ -55,21 +56,12 @@ export async function readSessions({ text = false, sources = adapters, cacheDir 
     for (const [path, file] of files) {
       const s = file.state.reader;
       if (s.started === null || s.native === null) continue;
-      const id = `${harness}:${s.native}`;
       const entries = file.records.filter(r => r.kind === 'entry');
       const ancestry = harness === 'pi' || harness === 'claude' ? activeBranch(entries, s.tip) : { entries, branch: 'file-order' };
       const branch = ancestry.entries;
-      const humans = branch.filter(r => r.entryKind === 'human');
-      const replies = branch.filter(r => r.entryKind === 'assistant' && r.text?.trim());
+      const { record, replies } = sessionRecord(harness, s, ancestry, { version: READER_VERSION, host, path, text });
+      const id = record.id;
       pathIds.set(path, id);
-      const parent = s.parent && !s.parent.includes('/') ? `${harness}:${s.parent}` : null;
-      const record = { reader: READER_VERSION, id, harness, session: s.native,
-        role: s.leader ? 'leader' : s.worker || (parent && !humans.length) ? 'worker' : s.automated ? 'automated' : 'solo',
-        parent, cwd: s.cwd, scratch: s.cwd === null ? null : /^\/(?:private\/)?(?:tmp(?:\/|$)|var\/folders(?:\/|$))/.test(s.cwd),
-        path, started: s.started, updated: s.updated, archived: s.archived, branch: ancestry.branch, humanTurns: humans.length,
-        resume: { cwd: s.cwd, argv: harness === 'pi' ? ['pi', '--session', s.native] : harness === 'claude' ? ['claude', '--resume', s.native] : ['codex', 'resume', s.native] } };
-      if (text) Object.assign(record, { title: s.title, firstAsk: humans[0]?.text ?? null,
-        lastAsk: humans.at(-1)?.text ?? null, lastReply: replies.at(-1)?.text ?? null });
       // Keep the freshest complete copy of a Session. Repeated entries in that copy collapse by identity.
       if (sessions.has(id)) cov.copies++;
       if ((selectedMtime.get(id) ?? -Infinity) > file.mtimeMs) continue;
@@ -80,8 +72,7 @@ export async function readSessions({ text = false, sources = adapters, cacheDir 
         ...(s.title ? [{ kind: 'title', entry: s.titleEntry ?? null, t: s.titleTime ?? null, text: s.title }] : []),
         ...(replies.length ? [{ kind: 'reply', entry: replies.at(-1).id, t: replies.at(-1).t, text: replies.at(-1).text }] : []),
       ]);
-      streams.set(id, [...new Map(branch.map(r => [r.id, { reader: READER_VERSION, session: id, id: r.id,
-        parent: r.parent, t: r.t, kind: r.entryKind, name: r.name, ...(text ? { text: r.text } : {}) }])).values()]);
+      streams.set(id, [...new Map(branch.map(r => [r.id, entryRecord(r, { version: READER_VERSION, host, text })])).values()]);
     }
   }
   if (sources.codex) for (const row of await codexMetadata(codexDb)) {
@@ -90,8 +81,8 @@ export async function readSessions({ text = false, sources = adapters, cacheDir 
     const first = row.first_user_message ?? '';
     if (!r) {
       if (paths && !paths.includes(row.rollout_path)) continue;
-      r = { reader: READER_VERSION, id, harness: 'codex', session: row.id, role: 'solo', parent: row.parent ? `codex:${row.parent}` : null,
-        cwd: row.cwd ?? null, scratch: row.cwd == null ? null : /^\/(?:private\/)?(?:tmp(?:\/|$)|var\/folders(?:\/|$))/.test(row.cwd),
+      r = { reader: READER_VERSION, id, host, ref: sessionRef(host, id), harness: 'codex', session: row.id, role: 'solo', parent: row.parent ? `codex:${row.parent}` : null,
+        cwd: row.cwd ?? null, scratch: isScratch(row.cwd ?? null),
         path: row.rollout_path ?? null, started: row.created_at_ms ?? (row.created_at == null ? null : row.created_at * 1000),
         updated: row.updated_at_ms ?? (row.updated_at == null ? null : row.updated_at * 1000), archived: Boolean(row.archived), branch: 'file-order', humanTurns: 0,
         resume: { cwd: row.cwd ?? null, argv: ['codex', 'resume', row.id] } };

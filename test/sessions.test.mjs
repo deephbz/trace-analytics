@@ -169,9 +169,13 @@ test('CLI privacy, branch populations, text selection and id errors', () => fixt
     msg('tool', 'active', 4, 'toolResult', 'full tool text', { toolName: 'example' })]));
   const run = promisify(execFile);
   const cli = fileURLToPath(new URL('../bin/sessions.mjs', import.meta.url));
-  const invoke = (...args) => run(process.execPath, [cli, ...args], { env: { ...process.env, HOME: dir } });
+  const invoke = (...args) => run(process.execPath, [cli, ...args], { env: { ...process.env, HOME: dir, TRACE_ANALYTICS_HOST: '' } });
   const sessions = JSON.parse((await invoke('sessions', '--format', 'json')).stdout);
   assert.equal(sessions[0].id, 'pi:cli');
+  assert.deepEqual([sessions[0].host, sessions[0].ref], ['local', 'local/pi:cli']);
+  const hosted = JSON.parse((await invoke('entries', 'pi:cli', '--host', 'box-2', '--text', '--format', 'json')).stdout);
+  assert.deepEqual(hosted.map(e => e.ref), ['box-2/pi:cli#u', 'box-2/pi:cli#active', 'box-2/pi:cli#tool']);
+  await assert.rejects(invoke('sessions', '--host', 'a/b'), error => error.code === 1);
   assert.ok(!('firstAsk' in sessions[0]) && !('title' in sessions[0]));
   assert.equal(JSON.parse((await invoke('sessions', '--id', 'pi:cli', '--text', '--format', 'json')).stdout)[0].lastReply, 'active answer');
   const entries = JSON.parse((await invoke('entries', 'pi:cli', '--format', 'json')).stdout);

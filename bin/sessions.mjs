@@ -10,6 +10,7 @@ const help = `Usage: sessions <sessions|entries ID|calls|search QUERY> [options]
   SPAN: nonnegative integer Nm, Nh, Nd, Nw (now minus minutes, hours, days, weeks)
   --role solo|leader|worker|automated --all --text --id ID (sessions)
   --limit N (search, default 20) --format jsonl|json|table
+  --host NAME: Host identity for SESSION/ENTRY ref (default $TRACE_ANALYTICS_HOST or local)
 Default Session visibility: solo/leader, non-scratch, with human turns.
 Times are epoch milliseconds. Each record carries reader version ${READER_VERSION}.
 Text requires --text, except search. Logs stay read-only.`;
@@ -48,6 +49,7 @@ try {
   const { values: v, positionals: p } = parseArgs({ allowPositionals: true, options: {
     id: { type: 'string' }, since: { type: 'string' }, until: { type: 'string' }, harness: { type: 'string' }, role: { type: 'string' },
     all: { type: 'boolean' }, text: { type: 'boolean' }, limit: { type: 'string' }, format: { type: 'string', default: 'jsonl' }, help: { type: 'boolean' },
+    host: { type: 'string' },
   } });
   if (v.help) { console.log(help); process.exit(0); }
   const [verb, arg, ...extra] = p;
@@ -68,7 +70,7 @@ try {
     records = [...data.calls, ...data.compactions, ...data.tools].filter(r => r.t >= options.sinceMs && r.t < options.untilMs)
       .sort((a, b) => a.t - b.t).map(r => ({ reader: READER_VERSION, ...r }));
   } else {
-    const catalog = await readSessions({ text: verb === 'entries' ? false : Boolean(v.text || verb === 'search') });
+    const catalog = await readSessions({ text: verb === 'entries' ? false : Boolean(v.text || verb === 'search'), host: v.host });
     console.error(JSON.stringify({ reader: READER_VERSION, coverage: catalog.coverage }));
     function resolveId(key) {
       const matches = catalog.sessions.filter(s => s.id === key || s.session === key || s.id.startsWith(key));
@@ -86,7 +88,7 @@ try {
       const id = resolveId(arg);
       if (v.text) {
         const selected = catalog.sessions.find(s => s.id === id);
-        const full = await readSessions({ text: 'full', paths: [selected.path], useCache: false });
+        const full = await readSessions({ text: 'full', paths: [selected.path], useCache: false, host: v.host });
         records = full.entries.get(id);
       } else records = catalog.entries.get(id);
     }
