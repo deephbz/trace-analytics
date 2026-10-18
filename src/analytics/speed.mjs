@@ -233,6 +233,51 @@ function daily(rows, fit) {
   });
 }
 
+/**
+ * UTC hour blocks named by the region whose working day dominates them. Approximate:
+ * Asia 08–16 SGT, Europe 09–17 CET (10–18 CEST), US 12–20 ET (EDT).
+ */
+export const REGION_BLOCKS = [
+  ["asia", "Asia day", 0, 8],
+  ["europe", "Europe day", 8, 16],
+  ["us", "US day", 16, 24],
+];
+const blockOf = (hour) => REGION_BLOCKS.find(([, , lo, hi]) => hour >= lo && hour < hi)[0];
+
+/**
+ * Speed by UTC day and hour of day. Each cell holds medians of its calls:
+ * e2e (tok/s), rel (e2e over the route's own e2e p50, so routes pool without mix shift),
+ * ttft (ms), ttftVariance (ms above the route's context floor).
+ * cells: [day, hour, calls, e2e, rel, ttft, ttftVariance]; hours and blocks pool all days;
+ * dayBlocks pool each day's region block; blocks pool each region block over all days as
+ * [block, calls, e2e, rel, ttft, ttftVariance]. A route's rel median over the window is 1.
+ */
+export function seasonality(rows) {
+  const cell = (rs) => {
+    const e = rs.map((r) => r.e2e).filter((x) => x != null);
+    return [rs.length, q(e, 0.5), q(rs.map((r) => r.rel).filter((x) => x != null), 0.5), q(rs.map((r) => r.ttft), 0.5), q(rs.map((r) => r.variance), 0.5)];
+  };
+  const group = (key) => {
+    const m = new Map();
+    for (const r of rows) {
+      const k = key(r);
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(r);
+    }
+    return [...m].sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  };
+  const hourOf = (r) => new Date(r.t).getUTCHours();
+  const dayOf = (r) => Math.floor(r.t / DAY) * DAY;
+  const qs = (rs, f) => [0.25, 0.5, 0.75].map((p) => q(rs.map(f).filter((x) => x != null), p));
+  return {
+    cells: group((r) => `${dayOf(r)}|${String(hourOf(r)).padStart(2, "0")}`).map(([k, rs]) => [+k.split("|")[0], +k.split("|")[1], ...cell(rs)]),
+    // Per hour of day over all days: calls and p25/p50/p75 of rel and ttftVariance.
+    hours: group((r) => String(hourOf(r)).padStart(2, "0")).map(([h, rs]) => ({ hour: +h, calls: rs.length, e2e: qs(rs, (r) => r.e2e), rel: qs(rs, (r) => r.rel), ttft: qs(rs, (r) => r.ttft), ttftVariance: qs(rs, (r) => r.variance) })),
+    dayBlocks: group((r) => `${dayOf(r)}|${blockOf(hourOf(r))}`).map(([k, rs]) => [+k.split("|")[0], k.split("|")[1], ...cell(rs)]),
+    blocks: group((r) => blockOf(hourOf(r))).map(([k, rs]) => [k, ...cell(rs)]),
+  };
+}
+
 /** The calls this study measures. */
 export const timed = (c) => c.ttft > 0 && c.out > 0;
 
@@ -251,11 +296,15 @@ export function analyzeSpeed({ window, calls, coverage }, { codeVersion } = {}) 
   }
   const routes = [];
   const points = [];
+  const pooled = [];
   for (const [route, rs] of [...byRoute].sort((a, b) => b[1].length - a[1].length)) {
     if (rs.length < MIN_CALLS) continue;
     const fit = fitFloor(rs);
     const i = routes.length;
-    routes.push({ route, fit, summary: summarize(rs, fit), daily: daily(rs, fit) });
+    const summary = summarize(rs, fit);
+    const seen = rs.map((r) => ({ t: r.t, e2e: e2e(r), rel: e2e(r) != null ? e2e(r) / summary.e2e.p50 : null, ttft: r.ttft, variance: splitTtft(fit, r).variance }));
+    pooled.push(...seen);
+    routes.push({ route, fit, summary, daily: daily(rs, fit), seasonality: seasonality(seen) });
     // [t, route, context, ttft, ttftFloor, decode|null, span|null, stall, stalls, held, reasoning>0, out, e2e|null]
     for (const r of rs) {
       points.push([r.t, i, context(r), r.ttft, splitTtft(fit, r).floor, decode(r), span(r), r.stall, r.stalls, held(r) ? 1 : 0, reasoningOf(r) > 0 ? 1 : 0, r.out, e2e(r)]);
@@ -273,6 +322,8 @@ export function analyzeSpeed({ window, calls, coverage }, { codeVersion } = {}) 
     sources: coverage.map((c) => ({ adapter: c.source, ...c, calls: perSource(c.source), untimed: c.calls - perSource(c.source) })),
     source: { calls: rows.length, excludedRoutes: [...byRoute].filter(([, rs]) => rs.length < MIN_CALLS).map(([route, rs]) => ({ route, calls: rs.length })) },
     routes,
+    // All summarized routes pooled; read rel and ttftVariance, since e2e and ttft mix routes.
+    seasonality: { regionBlocks: REGION_BLOCKS, all: seasonality(pooled) },
     points,
   };
 }
