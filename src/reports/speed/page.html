@@ -221,6 +221,11 @@ function hue(provider) {
   return PROVIDER_HUES[provider];
 }
 
+// The phases group into three causes: waiting for the first token, streaming, and the wait after the last token.
+// Hovering a phase lights its whole group in every route.
+const PHASE_GROUPS = { ttftFloor:"ttft", ttftVariance:"ttft", decoding:"decode", stallDuring:"decode", unsplit:"decode", stallAfter:"after" };
+const GROUP_LABELS = { ttft:"TTFT", decode:"decoding", after:"stall after last token" };
+
 function budget() {
   // Show a part only where some route has it (decoding incl. stalls is codex-only).
   const parts = R.parts.filter(([k]) => R.routes.some((r) => r.summary.budget[k] > 0)), rows = [...R.routes].sort((a, b) => b.summary.e2e.p50 - a.summary.e2e.p50);
@@ -252,19 +257,24 @@ function budget() {
     // Marks carry focus keys: r<row> for the route, p-<phase> for a phase.
     const rowT = `${r.route}: end-to-end p50 ${f0(e.p50)} tok/s (p25 ${f0(e.p25)}, p75 ${f0(e.p75)}, pooled ${f0(e.pooled)}) · mean wall ${s1(tot / s.calls)} per call · ${f0(s.calls)} calls`;
     const add = added[r.route] > 0 ? `<tspan class="fresh" style="fill:${css("--plain")}"> +${added[r.route]}</tspan>` : "";
-    g += `<g data-f="r${i}" data-t="${rowT}"><rect x="${colL}" y="${y}" width="${colB - 8}" height="${rowH}" fill-opacity="0"/>`;
+    // The route name also carries every phase and group key, so a phase focus still names each lane.
+    const nameKeys = [...new Set(parts.flatMap(([k]) => [`p-${k}`, `g-${PHASE_GROUPS[k]}`]))].join(" ");
+    g += `<g data-f="r${i} ${nameKeys}" data-q="r${i}" data-t="${rowT}"><rect x="${colL}" y="${y}" width="${colB - 8}" height="${rowH}" fill-opacity="0"/>`;
     // Route: provider stripe, model, provider name.
     g += `<rect x="${colL}" y="${y + 5}" width="3" height="${rowH - 10}" fill="${c}"/>`;
     g += `<text x="${colL + 10}" y="${cy - 2}" font-weight="600">${modelOf(r.route)}</text><text x="${colL + 10}" y="${cy + 11}" font-size="10" fill="${c}" style="fill:${c}">${prov} · ${f0(s.calls)} calls${add}</text>`;
+    g += `</g><g data-f="r${i}" data-t="${rowT}">`;
     // Speed: p25–p75 bar and p50 dot on the shared scale.
     g += `<line x1="${SX(e.p25)}" y1="${cy}" x2="${SX(e.p75)}" y2="${cy}" stroke="${c}" stroke-opacity="0.35" stroke-width="7" stroke-linecap="round"/>`;
     g += `<circle cx="${SX(e.p50)}" cy="${cy}" r="5.5" fill="${c}" stroke="${css("--bg")}" stroke-width="1.5"/>`;
     g += `<text x="${colV}" y="${cy - 1}" font-weight="700" font-size="14">${f0(e.p50)}</text><text class="m" x="${colV}" y="${cy + 12}" font-size="10">${(e.p50 / slow).toFixed(1)}× slowest</text></g>`;
     // Time: the call's phases in order.
     let x = 0;
+    const grp = (k) => parts.filter(([p]) => PHASE_GROUPS[p] === PHASE_GROUPS[k]).reduce((t, [p]) => t + b[p], 0);
     for (const [k, label] of parts) {
-      const f = b[k] / tot, w = f * bW;
-      g += `<g data-f="r${i} p-${k}" data-t="${r.route} · ${label}: ${pct(f)} of wall time, ${s1(b[k] / s.calls)} per call"><rect x="${BX(x)}" y="${y + 7}" width="${Math.max(0, w - 1)}" height="${rowH - 14}" fill="${fill(k)}"/>`;
+      const f = b[k] / tot, w = f * bW, gk = PHASE_GROUPS[k], gt = grp(k);
+      const t = `${r.route} · ${label}: ${pct(f)} of wall time, ${s1(b[k] / s.calls)} per call` + (gt > b[k] * 1.01 ? ` · all ${GROUP_LABELS[gk]}: ${pct(gt / tot)}, ${s1(gt / s.calls)} per call` : "");
+      g += `<g data-f="r${i} p-${k} g-${gk}" data-q="g-${gk}" data-t="${t}"><rect x="${BX(x)}" y="${y + 7}" width="${Math.max(0, w - 1)}" height="${rowH - 14}" fill="${fill(k)}"/>`;
       if (w > 30) g += `<text x="${BX(x) + 4}" y="${cy + 4}" style="fill:${css("--on-" + k)}" font-size="10.5">${pct(f)}</text>`;
       g += `</g>`;
       x += f;
@@ -278,10 +288,10 @@ function budget() {
     const w = 24 + label.length * 6.4;
     if (kx + w > W && kx > colB) (kx = colB), (ky += 16);
     const shares = rows.map((r) => { const b = r.summary.budget; return `${r.route} ${pct(b[k] / parts.reduce((t, [p]) => t + b[p], 0))}`; }).join(" · ");
-    g += `<g data-f="p-${k}" data-t="${label}, share of wall time: ${shares}"><rect x="${kx}" y="${ky - 3}" width="${w - 6}" height="16" fill-opacity="0"/><rect x="${kx}" y="${ky}" width="10" height="10" fill="${fill(k)}"/><text x="${kx + 14}" y="${ky + 9}" font-size="10.5">${label}</text></g>`;
+    g += `<g data-f="p-${k} g-${PHASE_GROUPS[k]}" data-q="p-${k}" data-t="${label}, share of wall time: ${shares}"><rect x="${kx}" y="${ky - 3}" width="${w - 6}" height="16" fill-opacity="0"/><rect x="${kx}" y="${ky}" width="10" height="10" fill="${fill(k)}"/><text x="${kx + 14}" y="${ky + 9}" font-size="10.5">${label}</text></g>`;
     kx += w;
   }
-  const idle = "Hover a route to isolate it, or a phase in the key to compare its share across routes.";
+  const idle = "Hover a route to isolate it. Hover a bar segment to compare its phase group (TTFT, decoding, stall after) across routes, or a key entry for one phase.";
   $("budget").innerHTML = `<div class="readout m" aria-live="polite" data-idle="${idle}">${idle}</div><div class="chart-scroll" tabindex="0" role="region" aria-label="Route time budget chart"><svg viewBox="0 0 ${W} ${Math.max(H, ky + 14) + 8}" width="100%">${g}</svg></div>`;
   linkFocus("budget");
 }
@@ -439,6 +449,11 @@ const SM = {
 };
 const REGION_HUES = { asia:"#eaeaea", europe:"#bbb", us:"#999" };
 const REGION_DASH = { asia:"", europe:"5 3", us:"2 3" };
+// Diverging scale in OKLCH: light grey at the centre, red worse, blue better.
+// Blue is the split complement of the report's red (+210° hue). Both sides share lightness steps;
+// each side's chroma stops at the sRGB gamut, so blue peaks lower than red.
+const SCALE = { L0:0.82, L1:0.6, worse:[26.4, 0.17], better:[236.4, 0.128] };
+const scaleColour = (z) => { const t = Math.abs(z), [h, c] = z >= 0 ? SCALE.better : SCALE.worse; return `oklch(${(SCALE.L0 + (SCALE.L1 - SCALE.L0) * t).toFixed(3)} ${(c * t ** 0.9).toFixed(3)} ${h})`; };
 const MIN_CELL = 5, MIN_BAND = 20;
 let sScope = "all", sMetric = "rel";
 
@@ -464,8 +479,7 @@ function season() {
   // Colour: log ratio to a centre (1× for relative speed, else the median cell), clamped at 2× either way.
   const vals = cells.map((c) => c[ci]).sort((a, b) => a - b);
   const centre = sMetric === "rel" ? 1 : vals[vals.length >> 1];
-  const good = css("--plain"), bad = css("--stallDuring");
-  const tone = (v) => { const z = Math.max(-1, Math.min(1, Math.log2(v / centre))) * (upGood ? 1 : -1); return [z >= 0 ? good : bad, Math.abs(z)]; };
+  const tone = (v) => scaleColour(Math.max(-1, Math.min(1, Math.log2(v / centre))) * (upGood ? 1 : -1));
   const hh = (h) => String(h).padStart(2, "0"), ymd = (d) => new Date(d).toISOString().slice(0, 10);
   const db = S.dayBlocks.filter((c) => c[2] >= MIN_BAND && c[ci] != null);
   const hs = S.hours.filter((h) => h.calls >= MIN_CELL && h[hk][1] != null);
@@ -505,8 +519,7 @@ function season() {
       const k = blockOf(h)[0], keys = `data-f="h${h} d${i} k-${k} dk${i}-${k}" data-q="h${h} d${i}"`;
       const tip = `${ymd(d)} ${hh(h)}:00 UTC (${hh((h + 8) % 24)}:00 SGT) · ${c[2]} calls`;
       if (c[2] < MIN_CELL || c[ci] == null) { g += `<rect x="${X(h) + 1}" y="${y + 1}" width="${cw - 2}" height="${rh - 2}" fill="${css("--bg")}" stroke="${css("--line")}" ${keys} data-t="${tip}: too few to show"/>`; continue; }
-      const [col, a] = tone(c[ci]);
-      g += `<rect x="${X(h) + 1}" y="${y + 1}" width="${cw - 2}" height="${rh - 2}" fill="${col}" fill-opacity="${(0.08 + 0.85 * a).toFixed(2)}" ${keys} data-t="${tip}: ${label} ${fmt(c[ci])}"/>`;
+      g += `<rect x="${X(h) + 1}" y="${y + 1}" width="${cw - 2}" height="${rh - 2}" fill="${tone(c[ci])}" ${keys} data-t="${tip}: ${label} ${fmt(c[ci])}"/>`;
     }
   });
   // Right margin: each day's region-band medians on one shared scale.
@@ -545,10 +558,10 @@ function season() {
   const kx = mL, ky = pTop + 10;
   g += `<text x="${kx}" y="${ky}" font-weight="600" font-size="11">${label}</text>`;
   [-1, -0.5, 0, 0.5, 1].forEach((z, i) => {
-    const v = centre * 2 ** (upGood ? z : -z), [col, a] = tone(v);
-    g += `<rect x="${kx + i * 52}" y="${ky + 8}" width="50" height="14" fill="${col}" fill-opacity="${(0.08 + 0.85 * a).toFixed(2)}"/><text class="m" x="${kx + i * 52 + 25}" y="${ky + 36}" text-anchor="middle" font-size="10">${fmt(v)}</text>`;
+    const v = centre * 2 ** (upGood ? z : -z);
+    g += `<rect x="${kx + i * 52}" y="${ky + 8}" width="50" height="14" fill="${tone(v)}"/><text class="m" x="${kx + i * 52 + 25}" y="${ky + 36}" text-anchor="middle" font-size="10">${fmt(v)}</text>`;
   });
-  g += `<text class="m" x="${kx}" y="${ky + 54}" font-size="10">white better · red worse · clamped at 2×</text>`;
+  g += `<text class="m" x="${kx}" y="${ky + 54}" font-size="10">blue better · grey at centre · red worse · clamped at 2×</text>`;
   $("season").innerHTML = `<div class="take">${take}</div><div class="readout m" aria-live="polite" data-idle="${idle}">${idle}</div><div class="chart-scroll" tabindex="0" role="region" aria-label="Hourly and daily speed chart"><svg viewBox="0 0 ${W} ${H}" width="100%">${g}</svg></div>`;
   linkFocus("season");
 }
