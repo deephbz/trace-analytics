@@ -1,0 +1,51 @@
+name: Commit hygiene
+
+# Enforces the commit rules in AGENTS.md on every pull request: no coding-agent
+# thread or session IDs, and only GitHub identities.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check commits and pull request text
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          session='ampcode\.com/threads|\bT-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b|claude\.ai/(code|chat)/|chatgpt\.com/(c|codex)/|^[A-Za-z-]*(Thread|Session)(-ID)?:'
+          github_email='(@users\.noreply\.github\.com|^noreply@github\.com)$'
+          fail=0
+          for c in $(git rev-list "$BASE..$HEAD"); do
+            for email in $(git log -1 --format='%ae %ce' "$c"); do
+              if ! grep -qE "$github_email" <<<"$email"; then
+                echo "::error::$(git log -1 --format=%h "$c"): author or committer is not a GitHub noreply identity"; fail=1
+              fi
+            done
+            msg=$(git log -1 --format=%B "$c")
+            if grep -qiE "$session" <<<"$msg"; then
+              echo "::error::$(git log -1 --format=%h "$c"): message contains a coding-agent thread or session ID"; fail=1
+            fi
+            # Co-author credits: GitHub noreply identities or vendor noreply addresses only.
+            while read -r email; do
+              [ -z "$email" ] && continue
+              if ! grep -qE '(@users\.noreply\.github\.com|^noreply@[a-z0-9.-]+)$' <<<"$email"; then
+                echo "::error::$(git log -1 --format=%h "$c"): Co-authored-by uses a non-public email"; fail=1
+              fi
+            done < <(grep -iE '^Co-authored-by:' <<<"$msg" | sed -nE 's/.*<([^>]*)>.*/\1/p')
+          done
+          if grep -qiE "$session" <<<"$PR_TITLE"$'\n'"$PR_BODY"; then
+            echo "::error::pull request title or description contains a coding-agent thread or session ID"; fail=1
+          fi
+          exit "$fail"

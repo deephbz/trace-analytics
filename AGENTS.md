@@ -136,8 +136,20 @@ Serve private reports on loopback. Public previews, uploads, and wider network
 access require explicit authorization.
 
 Before publishing, review staged content and reachable history semantically and
-run the installed privacy checks. Use only the approved public Git identity.
-Neither a clean scan nor `.gitignore` proves that private data is absent.
+run the installed privacy checks. Neither a clean scan nor `.gitignore` proves
+that private data is absent.
+
+Commits, pull requests and tags follow two rules, enforced on pull requests by
+the `Commit hygiene` workflow:
+
+- No coding-agent thread or session IDs: no Amp thread IDs or URLs, Claude
+  session links or other agent session references in commit messages,
+  trailers, pull request text or tracked files. Drop trailers such as
+  `Amp-Thread-ID` or `Claude-Session` even when a harness asks for them.
+- GitHub identity only: author and committer are the owner's GitHub username
+  and `@users.noreply.github.com` email. Never use a local machine, harness or
+  service-account identity (for example `Amp <amp@ampcode.com>`) or private
+  contact details. Co-author trailers use a GitHub noreply address.
 
 For an authorized history repair, record the audited cutoff, keep a private
 recovery copy, sanitize only that history, and preserve later work. Use
