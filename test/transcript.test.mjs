@@ -25,7 +25,7 @@ const rich = () => [head('native'),
   msg('u1', null, 1, 'user', 'synthetic ask'),
   msg('a1', 'u1', 2, 'assistant', [{ type: 'thinking', thinking: 'plan' }, { type: 'text', text: 'calling' },
     { type: 'toolCall', id: 'c1', name: 'read', arguments: { path: 'x.txt' } }],
-  { provider: 'example', model: 'model-1', usage: { input: 10, output: 5, cacheRead: 2, cacheWrite: 1, cost: { total: 0.01 } } }),
+  { provider: 'example', model: 'model-1', stopReason: 'toolUse', usage: { input: 10, output: 5, cacheRead: 2, cacheWrite: 1, cost: { total: 0.01 } } }),
   msg('r1', 'a1', 3, 'toolResult', [{ type: 'text', text: 'line one' }, { type: 'image', data: 'QUJD', mimeType: 'image/png' }, { type: 'text', text: 'line two' }],
     { toolCallId: 'c1', toolName: 'read', isError: false }),
   msg('u2', 'r1', 4, 'user', [{ type: 'text', text: '<system-reminder>injected' }, { type: 'image', data: 'QUJD', mimeType: 'image/jpeg' }]),
@@ -47,6 +47,8 @@ test('TranscriptEntry carries blocks, results, usage, custom and compaction with
   assert.deepEqual(a1.blocks, [{ type: 'thinking', text: 'plan' }, { type: 'text', text: 'calling' },
     { type: 'toolCall', id: 'c1', name: 'read', args: { path: 'x.txt' } }]);
   assert.equal(a1.model, 'model-1');
+  assert.equal(a1.stop, 'toolUse');
+  assert.equal(a1.error, undefined);
   assert.deepEqual(a1.usage, { input: 10, output: 5, cacheRead: 2, cacheWrite: 1, cost: 0.01 });
   assert.deepEqual(r1.result, { callId: 'c1', isError: false, text: 'line one\nline two' });
   assert.equal(r1.kind, 'tool'); assert.equal(r1.name, 'read');
@@ -169,4 +171,16 @@ test('refresh after one appended line costs far less than a full parse (timings 
   assert.deepEqual(r.added.map(e => e.id), ['last']);
   assert.equal(s.entries().length, 20001);
   console.log(`# transcript 20k entries: full ${full.toFixed(1)} ms, one-line refresh ${inc.toFixed(2)} ms`);
+}));
+
+test('a failed assistant turn keeps its stop reason and error text, even with no content', () => fixture(async dir => {
+  const path = join(dir, 's.jsonl');
+  await writeFile(path, jsonl([head('failed'), msg('u1', null, 1, 'user', 'ask'),
+    msg('a1', 'u1', 2, 'assistant', [], { stopReason: 'error', errorMessage: '529 overloaded' })]));
+  const s = openPiSession(path, { host: 'hostA' });
+  await s.refresh();
+  const a1 = s.entries().find(e => e.id === 'a1');
+  assert.equal(a1.kind, 'assistant');
+  assert.equal(a1.stop, 'error');
+  assert.equal(a1.error, '529 overloaded');
 }));

@@ -44,6 +44,9 @@ function transcriptEntry(o, r, host) {
       if (m.model) e.model = m.model;
       if (m.provider) e.provider = m.provider;
       if (m.usage) e.usage = usageOf(m.usage);
+      // How the turn ended (stop, toolUse, length, error, aborted), and the provider's error text when it failed.
+      if (typeof m.stopReason === 'string') e.stop = m.stopReason;
+      if (typeof m.errorMessage === 'string' && m.errorMessage) e.error = m.errorMessage;
     }
     if (m.role === 'toolResult') e.result = { callId: m.toolCallId ?? null, isError: m.isError === true, text: textOf(m.content) };
     else e.blocks = blocksOf(m.content);
