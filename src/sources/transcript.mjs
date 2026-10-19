@@ -48,6 +48,7 @@ export function transcriptEntry(o, r, host) {
       if (typeof m.stopReason === 'string') e.stop = m.stopReason;
       if (typeof m.errorMessage === 'string' && m.errorMessage) e.error = m.errorMessage;
     }
+    if (m.role === 'bashExecution') e.text = `${m.command ?? ''}\n${m.output ?? ''}`;
     if (m.role === 'toolResult') e.result = { callId: m.toolCallId ?? null, isError: m.isError === true, text: textOf(m.content) };
     else e.blocks = blocksOf(m.content);
   } else if (o.type === 'custom_message' || o.type === 'custom') {
@@ -56,6 +57,23 @@ export function transcriptEntry(o, r, host) {
     else if (typeof o.data?.text === 'string') e.text = o.data.text;
   } else if (o.type === 'compaction' || o.type === 'branch_summary') e.summary = o.summary ?? null;
   return e;
+}
+
+/** Text covered by Session Mirror's in-Session substring search. No image bytes. */
+export function mirrorEntryText(e) {
+  const prose = (c) => typeof c === 'string' ? c : (c ?? []).map(p => p.type === 'text' ? p.text ?? '' : '').join('');
+  if (e.type === 'message') {
+    const m = e.message ?? {};
+    if (m.role === 'user' || m.role === 'toolResult') return prose(m.content);
+    if (m.role === 'assistant') return typeof m.content === 'string' ? m.content : (m.content ?? []).map(p =>
+      p.type === 'text' ? p.text ?? '' : p.type === 'thinking' ? p.thinking ?? '' :
+      p.type === 'toolCall' ? `${p.name} ${JSON.stringify(p.arguments)}` : '').join('\n');
+    if (m.role === 'bashExecution') return `${m.command}\n${m.output}`;
+    return '';
+  }
+  if (e.type === 'custom_message') return prose(e.content);
+  if (e.type === 'compaction' || e.type === 'branch_summary') return e.summary ?? '';
+  return '';
 }
 
 /** Open a Pi Session file for incremental reading. Nothing is read until refresh(). */

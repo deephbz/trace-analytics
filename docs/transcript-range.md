@@ -1,6 +1,6 @@
 # Bounded Pi transcript ranges
 
-Status: prototype. The reader owns decoding and ancestry. Consumers own view
+Status: bounded reader API used by the AmPi integration. The reader owns decoding and ancestry. Consumers own view
 selection and copy retention. The full `openPiSession` contract stays unchanged.
 This prototype requires Node with `node:sqlite` support.
 
@@ -23,7 +23,14 @@ full entry request    -> one exact byte range in native source
 - `entry(id, { full: false, version })`: preview, or one full normalized entry
   read by offset. Full reads are caller-requested and outside the preview
   memory bound. References keep the configured Host.
-- `session()`: compact identity, activity, cwd, and fork-header metadata.
+- `visit(visitor, { after })`: stream active-branch native records and normalized
+  entries in order. The callback receives `{ native, entry, position, offset,
+  length }`. Only one source record is decoded at a time. `after` must name a
+  current-branch entry. Consumers must not accumulate source bodies.
+- `entryBytes(id, { offset: 0, limit: 65536 })`: one native JSON byte page.
+  Returns `text`, `next`, `more`, and `format: "native-json"`. The limit is at
+  most 64 KiB. `next` avoids split UTF-8 characters. Use that exact cursor.
+- `session()`: compact identity, activity, cwd, title, tip, and fork-header metadata.
   This is not the full catalog SESSION record.
 - `info()`: committed bytes, version, branch count, invalid-line count, and
   sampled peak JavaScript heap bytes. `close()` releases SQLite resources.
@@ -61,7 +68,13 @@ fail the read instead of using an unrelated Host or path.
 branch parity against both `activeBranch()` and the full reader. Cases include
 an appended parent outside the tail, reset, same-length replacement, imported
 fork, compaction, missing/cyclic ancestry, restart, partial lines, Host identity,
-and full-body recovery after preview truncation.
+full-body recovery after preview truncation, streamed suffix visits, warm titles,
+and UTF-8 byte-page reconstruction.
+
+`mirrorEntryText(native)` in `transcript.mjs` owns in-Session search extraction.
+It follows Session Mirror: user/reply text, thinking, tool name and arguments,
+tool output, bash command and output, custom messages, and summaries. It omits
+images and non-text metadata. Fleet prose selection remains a consumer policy.
 
 Use a private source and private index for measurements:
 
@@ -91,12 +104,12 @@ process immediately after that check. Repeat the uncached copy for each trial.
 Do not use a global cache purge or modify the original Session. The OS may
 still cache directory metadata, libraries, and executable pages.
 
-## Limits before hub integration
+## Integration limits
 
 The scan is bounded by one native JSON line, not a fixed byte ceiling.
 Oversized lines require a separate ingestion policy. The SQLite transaction
 spans one refresh, so no reads through the same reader run during that refresh.
-The prototype has one connection per index; a fleet integration must bound
+Each reader has one connection per index; fleet integrations must bound
 connections and schedule scan work away from latency-sensitive rendering.
 It does not implement full SESSION aggregates, Rarebit selection, FTS, or
 consumer-specific materializations. Those remain separate integration work.

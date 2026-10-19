@@ -8,7 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { checkHost, observe, sessionState, sessionRef } from './session-state.mjs';
 import { transcriptEntry } from './transcript.mjs';
 
-const VERSION = 1;
+const VERSION = 2;
 const CHUNK = 64 * 1024;
 const SAMPLE = 128;
 const hash = (x) => createHash('sha256').update(x).digest('hex');
@@ -103,8 +103,8 @@ export function openPiSessionRange(path, { host, indexPath, previewChars = 2048 
       const reset = force || !prefixMatches || stat.ino !== meta?.ino || stat.size <= (meta?.size ?? 0);
       const next = reset ? { version: VERSION, host, path, previewChars, offset: 0, digest: hash(''), generation: (meta?.generation ?? 0) + 1,
         state: { reader: sessionState('pi', path, false) }, branch: 'complete', header: null, invalidLines: 0 } : structuredClone(meta);
-      // observe needs text for human/injected classification, but no text is kept in state.
-      next.state.reader.text = false;
+      // Capture title updates; discard observation text before persisting node metadata.
+      next.state.reader.text = true;
       let branchChanged = reset, added = 0, carry = Buffer.alloc(0), pos = next.offset;
       let top = reset ? -1 : Number(db.prepare('SELECT COALESCE(MAX(position),-1) AS n FROM branch').get().n);
       db.exec('BEGIN IMMEDIATE');
@@ -126,6 +126,7 @@ export function openPiSessionRange(path, { host, indexPath, previewChars = 2048 
             let r;
             observe(next.state, o, (record) => { r = record; });
             if (!r) continue;
+            delete r.text;
             if (node.get(r.id) || r.parent !== previousTip) branchChanged = true;
             const view = preview(transcriptEntry(o, r, host), previewChars);
             put.run(r.id, r.parent, base + start, nl - start, JSON.stringify(r), JSON.stringify(view));
@@ -202,11 +203,49 @@ export function openPiSessionRange(path, { host, indexPath, previewChars = 2048 
       return r ? decode(fd, r, full) : undefined;
     } finally { closeSync(fd); }
   }
-  return { refresh, page, entry, info,
+  /** Visit source records one at a time. Consumers may persist their own projections. */
+  function visit(visitor, { after } = {}) {
+    const fd = source();
+    try {
+      let position = -Number.MAX_SAFE_INTEGER;
+      if (after != null) {
+        const row = db.prepare('SELECT position FROM branch WHERE id=?').get(after);
+        if (!row) throw new Error('Entry is not on the active branch');
+        position = Number(row.position);
+      }
+      for (const row of db.prepare(`SELECT n.*, b.position FROM branch b JOIN nodes n ON n.id=b.id
+        WHERE b.position > ? ORDER BY b.position`).iterate(position)) {
+        const native = JSON.parse(bytes(fd, Number(row.start), Number(row.length)).toString('utf8'));
+        visitor({ native, entry: transcriptEntry(native, JSON.parse(row.observation), host), position: Number(row.position),
+          offset: Number(row.start), length: Number(row.length) });
+        measure();
+      }
+    } finally { closeSync(fd); }
+  }
+  function entryBytes(id, { offset = 0, limit = 65536 } = {}) {
+    if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 4 || limit > 65536) throw new Error('Invalid byte range');
+    const fd = source();
+    try {
+      const row = node.get(id);
+      if (!row) throw new Error('Entry offset unavailable');
+      const remaining = Math.max(0, Number(row.length) - offset);
+      const buffer = bytes(fd, Number(row.start) + offset, Math.min(limit, remaining));
+      let length = buffer.length;
+      // End before a split UTF-8 code point. Subsequent requests use this exact cursor.
+      if (remaining > length) {
+        let first = length - 1;
+        while (first > 0 && (buffer[first] & 0xc0) === 0x80) first--;
+        const lead = buffer[first], width = lead < 0x80 ? 1 : lead < 0xe0 ? 2 : lead < 0xf0 ? 3 : 4;
+        if (length - first < width) length = first;
+      }
+      return { text: buffer.subarray(0, length).toString('utf8'), next: offset + length, more: remaining > length, format: 'native-json' };
+    } finally { closeSync(fd); }
+  }
+  return { refresh, page, entry, entryBytes, info, visit,
     session() {
       const s = meta?.state.reader;
       return s?.native == null ? null : { id: `pi:${s.native}`, host, ref: sessionRef(host, `pi:${s.native}`),
-        cwd: s.cwd, started: s.started, updated: s.updated, header: meta.header };
+        cwd: s.cwd, title: s.title, started: s.started, updated: s.updated, tip: s.tip, header: meta.header };
     },
     close() { if (!closed) { if (refreshing) throw new Error('Refresh in progress'); db.close(); closed = true; } },
   };

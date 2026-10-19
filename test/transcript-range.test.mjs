@@ -112,6 +112,32 @@ test('range preview budget changes invalidate persisted text rather than retaini
   assert.equal(smaller.page().entries[0].blocks[0].text.length, 128);
 });
 
+test('stream visits keep full source records outside the preview and byte pages preserve UTF-8', async (t) => {
+  const text = '你好🌟'.repeat(30000);
+  const record = msg('a', null, text);
+  const { path, reader } = setup(t, [record]);
+  await reader.refresh();
+  const visited = [];
+  reader.visit(({ native, entry, position }) => visited.push([native.message.content[0].text.length, entry.id, position]));
+  assert.deepEqual(visited.map(v => v.slice(0, 2)), [[text.length, 'a']]);
+  let offset = 0, result = '', part;
+  do { part = reader.entryBytes('a', { offset, limit: 65536 }); assert.ok(Buffer.byteLength(part.text) <= 65536); result += part.text; offset = part.next; } while (part.more);
+  assert.deepEqual(JSON.parse(result), record);
+  appendFileSync(path, line(msg('b', 'a'))); await reader.refresh();
+  const ids = []; reader.visit(({ entry }) => ids.push(entry.id), { after: 'a' });
+  assert.deepEqual(ids, ['b']);
+  assert.throws(() => reader.entryBytes('a', { limit: 65537 }), /Invalid/);
+  assert.throws(() => reader.visit(() => {}, { after: 'missing' }), /active branch/);
+});
+
+test('title records survive a warm reopen without retaining source text in observations', async (t) => {
+  const { path, indexPath, reader } = setup(t, [msg('a', null), { type: 'session_info', id: 'name', parentId: 'a', name: '20260101-Synthetic title' }]);
+  await reader.refresh(); assert.equal(reader.session().title, 'Synthetic title'); reader.close();
+  const reopened = openPiSessionRange(path, { host: 'example', indexPath });
+  t.after(() => reopened.close());
+  assert.equal(reopened.session().title, 'Synthetic title');
+});
+
 test('range index identity cannot reuse another Hosts citations', async (t) => {
   const { path, indexPath, reader } = setup(t, [msg('a', null)]);
   await reader.refresh(); reader.close();
