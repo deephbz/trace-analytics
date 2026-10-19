@@ -35,7 +35,7 @@ const usageOf = (u) => ({ input: u.input ?? null, output: u.output ?? null, cach
   cacheWrite: u.cacheWrite ?? null, cost: u.cost?.total ?? (typeof u.cost === 'number' ? u.cost : null) });
 
 /** TranscriptEntry of a native Pi line o and its ENTRY observation r. */
-function transcriptEntry(o, r, host) {
+export function transcriptEntry(o, r, host) {
   const e = { ref: entryRef(host, r.session, r.id), id: r.id, parent: r.parent, t: r.t, kind: r.entryKind, name: r.name };
   if (o.type === 'message') {
     const m = o.message ?? {};

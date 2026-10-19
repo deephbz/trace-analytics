@@ -51,6 +51,11 @@ SESSION and ENTRY records carry `host` and `ref` (`<host>/<id>`, `<host>/<id>#<e
 The Host comes from `--host`, then `TRACE_ANALYTICS_HOST`, then `local`, never from the path.
 Library consumers can follow one live Pi Session with `openPiSession(path, { host })`
 from `trace-analytics/transcript`: `refresh()` parses only appended bytes.
+A disk-backed range-reader prototype lives beside it in
+[`src/sources/transcript-range.mjs`](src/sources/transcript-range.mjs).
+Its contract and isolated memory/cold-open check are in
+[the range-reader note](docs/transcript-range.md). It does not change the
+existing full-reader API.
 `--since` and `--until` accept absolute dates or nonnegative integer spans:
 `Nm`, `Nh`, `Nd`, `Nw`. A span subtracts minutes, hours, days, or weeks from
 one shared current-time anchor. For example, `sessions --since 7d` selects
