@@ -28,7 +28,7 @@ export function observe(st, o, emit) {
       s.native = o.id ?? s.native; s.cwd = o.cwd ?? null;
       s.parent = o.parentSession ?? null; s.started = t; return;
     }
-    if (o.type === 'session_info' && s.text && o.name) { s.title = o.name.replace(/^\d{8}-/, ''); s.titleTime = t; s.titleEntry = o.id ?? null; }
+    if (o.type === 'session_info' && s.text && o.name) { s.title = o.name; s.titleTime = t; s.titleEntry = o.id ?? null; }
     id = o.id; parent = o.parentId ?? null;
     if (o.type === 'message') {
       const m = o.message ?? {}; text = textOf(m.content);

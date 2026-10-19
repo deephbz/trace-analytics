@@ -57,6 +57,15 @@ test('exact deep Pi active branch and append refresh; metadata never stores text
   assert.deepEqual(after.compactions, before.compactions);
 }));
 
+test('Pi titles preserve the stored date prefix', () => fixture(async dir => {
+  const path = join(dir, 'dated.jsonl');
+  const name = '20260101-Investigate a long Session title';
+  await writeFile(path, jsonl([head('dated'),
+    { type: 'session_info', id: 'title', parentId: null, timestamp: iso(1), name }]));
+  const catalog = await readSessions({ sources: { pi: source(pi, [path]) }, text: true, useCache: false, codexDb: null });
+  assert.equal(catalog.sessions[0].title, name);
+}));
+
 test('copies select the newest divergent stream; roles use the whole history', () => fixture(async dir => {
   const a = join(dir, 'a.jsonl'), b = join(dir, 'b.jsonl');
   const start = [head('shared'), msg('u', null, 1, 'user', 'common')];
