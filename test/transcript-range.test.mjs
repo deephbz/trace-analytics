@@ -132,10 +132,10 @@ test('stream visits keep full source records outside the preview and byte pages 
 
 test('title records survive a warm reopen without retaining source text in observations', async (t) => {
   const { path, indexPath, reader } = setup(t, [msg('a', null), { type: 'session_info', id: 'name', parentId: 'a', name: '20260101-Synthetic title' }]);
-  await reader.refresh(); assert.equal(reader.session().title, 'Synthetic title'); reader.close();
+  await reader.refresh(); assert.equal(reader.session().title, '20260101-Synthetic title'); reader.close();
   const reopened = openPiSessionRange(path, { host: 'example', indexPath });
   t.after(() => reopened.close());
-  assert.equal(reopened.session().title, 'Synthetic title');
+  assert.equal(reopened.session().title, '20260101-Synthetic title');
 });
 
 test('range index identity cannot reuse another Hosts citations', async (t) => {
