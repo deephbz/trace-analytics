@@ -3,6 +3,7 @@
 // reader leaves no handle, and an aborted export settles without waiting for the node.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -70,6 +71,30 @@ test('a cold refresh with a sink delivers every page before it fetches the next,
   assert.deepEqual(ids, node.records.map((x) => x.id));
   const order = node.log.filter((x) => x.startsWith('fetch:') || x.startsWith('sink:'));
   for (let i = 0; i < 100; i++) assert.deepEqual(order.slice(2 * i, 2 * i + 2), [`fetch:${10 * i + 1}`, `sink:${10 * i + 1}`]);
+  r.close();
+});
+
+// Review A: one page of oversized descriptors retains at most one oversized body.
+
+test('a page of oversized descriptors delivers each expanded body to the sink before it fetches the next', async () => {
+  const big = new Set([2, 3, 5]);
+  const node = fakeNode(Array.from({ length: 6 }, (_, i) => user(i + 1, big.has(i + 1) ? 'x'.repeat(1000) : undefined)));
+  const body = (id) => Buffer.from(JSON.stringify(node.records[id - 1]));
+  node.entries = async ({ minEntryId = -Infinity, maxEntryId = Infinity, limit }) => {
+    const rows = node.records.filter((r) => r.id >= minEntryId && r.id <= maxEntryId).slice(0, limit);
+    const items = rows.map((r) => big.has(r.id)
+      ? { type: 'oversized', id: r.id, conversationId: 4, kind: r.kind, bytes: body(r.id).length, sha256: createHash('sha256').update(body(r.id)).digest('hex') }
+      : { type: 'entry', record: r });
+    return { items, more: false, last: rows.at(-1)?.id ?? null };
+  };
+  node.raw = async ({ id }) => { node.log.push(`raw:${id}`); return { exportId: `x${id}`, data: body(id).toString('base64'), done: true }; };
+  const r = openDurableSession({ node, threadId: THREAD, host: HOST, retain: false, pageLimit: 10 });
+  const ids = [];
+  const sink = ({ records }) => { node.log.push(`sink:${records.map((x) => x.id).join(',')}`); ids.push(...records.map((x) => x.id)); };
+  assert.equal((await r.refresh({ sink })).status, 'ready');
+  assert.deepEqual(ids, [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(node.log.filter((x) => x.startsWith('raw:') || x.startsWith('sink:')),
+    ['raw:2', 'sink:1,2', 'raw:3', 'sink:3', 'raw:5', 'sink:4,5', 'sink:6']);
   r.close();
 });
 

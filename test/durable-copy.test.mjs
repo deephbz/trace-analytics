@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -138,6 +138,33 @@ test('copy: an uncommitted tail is invisible and the next write drops it', () =>
     assert.equal(copy.session().humanTurns, 3);
     removeDurableCopy(file);
     assert.throws(() => copy.refresh(), /rebuild it from the node/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('copy: the offset index finds each entry by ID and its parent, and an out-of-order index reads as damaged', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'durable-copy-index-'));
+  try {
+    const file = join(dir, 'c.jsonl'), threadId = 'tree-a.1';
+    const rec = (id) => ({ id, conversationId: 1, kind: 'pi.user', model: [{ role: 'user', content: `m${id}`, timestamp: 1000 + id }] });
+    const ids = [0, 3, 4, 10, 99, 1000];
+    writeDurableCopy(file, { host: HOST, threadId, reset: true, records: ids.map(rec), checkpoint: null, conversation: { id: 1 } });
+    const copy = openDurableCopy(file, { host: HOST });
+    copy.refresh();
+    ids.forEach((id, i) => {
+      const e = copy.entry(id);
+      assert.equal(e.id, String(id));
+      assert.equal(e.parent, i ? String(ids[i - 1]) : null);
+      assert.equal(JSON.parse(copy.entryBytes(String(id)).text).id, id);
+    });
+    for (const missing of [1, 5, 1001, '04', '3.0', 'x']) assert.equal(copy.entry(missing), undefined, `no entry ${missing}`);
+    assert.deepEqual(visitAll(copy, { after: 10 }).map((r) => r.entry.id), ['99', '1000']);
+    // Swap two index lines of equal length: the bytes stay committed, the order breaks.
+    const index = durableCopyFiles(file).index, lines = readFileSync(index, 'utf8').split('\n');
+    [lines[1], lines[2]] = [lines[2], lines[1]];
+    writeFileSync(index, lines.join('\n'));
+    copy.refresh();
+    assert.throws(() => copy.entry(3), /index is damaged; rebuild it from the node/);
+    copy.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

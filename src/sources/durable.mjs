@@ -373,16 +373,26 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
     if (createHash('sha256').update(buf).digest('hex') !== item.sha256) throw Object.assign(new Error(`Entry ${item.id} changed during export`), { code: 'unavailable' });
     return JSON.parse(buf.toString('utf8'));
   }
-  /** Read the range a page at a time; `take(records)` absorbs each page before the next fetch, or returns false to stop. */
+  /**
+   * Read the range a page at a time; `take(records)` absorbs each page before the next fetch, or returns false to stop.
+   * A page splits after each oversized body, so the reader holds one page and at most one oversized body.
+   */
   async function scan({ minEntryId, maxEntryId }, take) {
     const { handle } = attachment;
     for (let from = minEntryId; ;) {
       const page = await node.entries({ handle, order: 'ascending', limit: pageLimit, maxEntryId, ...(from === undefined ? {} : { minEntryId: from }) });
       live();
       stats.received += page.items.length;
-      const records = [];
-      for (const item of page.items) records.push(item.type === 'entry' ? item.record : await fetchRaw(handle, item));
-      if ((await take(records)) === false) return false;
+      // An expanded oversized body goes to `take` with the plain records before it, before the next body is fetched.
+      let records = [], took = false;
+      for (const item of page.items) {
+        if (item.type === 'entry') { records.push(item.record); continue; }
+        records.push(await fetchRaw(handle, item));
+        took = true;
+        if ((await take(records)) === false) return false;
+        records = [];
+      }
+      if ((records.length || !took) && (await take(records)) === false) return false;
       if (!page.more || page.last === null) return true;
       from = page.last + 1;
     }

@@ -128,15 +128,57 @@ export function openDurableCopy(file, { host } = {}) {
   host = checkHost(host);
   let meta = null, index = null, closed = false;
   const assertOpen = () => { if (closed) throw new Error('Copy reader is closed'); };
+  /**
+   * The offset index as typed columns, streamed from disk in bounded chunks: 20 bytes an entry. The copy appends
+   * ascending integer IDs, so a lookup is a binary search; an index that breaks that order is damaged.
+   */
   function loadIndex() {
     if (index) return index;
-    index = new Map();
-    const order = [];
-    if (meta.idxBytes) {
-      const lines = readRange(idxFile(file, meta.generation), 0, meta.idxBytes).toString('utf8').split('\n');
-      for (const line of lines) if (line) { const [id, offset, length] = JSON.parse(line); index.set(id, { offset, length, position: order.length }); order.push(id); }
-    }
-    index.order = order;
+    const damaged = () => new Error('Copy index is damaged; rebuild it from the node');
+    const ids = new Float64Array(meta.lines), offsets = new Float64Array(meta.lines), lengths = new Uint32Array(meta.lines);
+    let count = 0;
+    const fd = openSync(idxFile(file, meta.generation), 'r');
+    try {
+      let carry = Buffer.alloc(0), offset = 0;
+      const buffer = Buffer.alloc(Math.min(CHUNK, meta.idxBytes));
+      while (offset < meta.idxBytes) {
+        const n = readSync(fd, buffer, 0, Math.min(buffer.length, meta.idxBytes - offset), offset);
+        if (!n) throw new Error('Copy is shorter than its committed length; rebuild it from the node');
+        offset += n;
+        let data = carry.length ? Buffer.concat([carry, buffer.subarray(0, n)]) : buffer.subarray(0, n), from = 0;
+        for (let nl = data.indexOf(10, from); nl >= 0; nl = data.indexOf(10, from)) {
+          // A line is `["<id>",<offset>,<length>]`, the writer's own JSON: parse its digits without allocating.
+          let i = from;
+          const digits = (end) => {
+            let v = 0, start = i;
+            while (i < nl && data[i] >= 48 && data[i] <= 57) v = v * 10 + data[i++] - 48;
+            if (i === start || i - start > 15 || (data[start] === 48 && i - start > 1) || data[i++] !== end) throw damaged();
+            return v;
+          };
+          if (data[i++] !== 91 || data[i++] !== 34) throw damaged();
+          const key = digits(34);
+          if (data[i++] !== 44) throw damaged();
+          const at = digits(44), length = digits(93);
+          if (i !== nl || count >= meta.lines || (count && key <= ids[count - 1])) throw damaged();
+          ids[count] = key; offsets[count] = at; lengths[count] = length; count++;
+          from = nl + 1;
+        }
+        carry = Buffer.from(data.subarray(from));
+      }
+    } finally { closeSync(fd); }
+    if (count !== meta.lines) throw damaged();
+    index = {
+      get(id) {
+        const key = Number(id);
+        for (let lo = 0, hi = count - 1; lo <= hi;) {
+          const mid = (lo + hi) >>> 1;
+          if (ids[mid] === key) return String(key) === String(id) ? { offset: offsets[mid], length: lengths[mid], position: mid } : undefined;
+          if (ids[mid] < key) lo = mid + 1; else hi = mid - 1;
+        }
+        return undefined;
+      },
+      idAt: (position) => String(ids[position]),
+    };
     return index;
   }
   function readRange(path, offset, length) {
@@ -216,7 +258,7 @@ export function openDurableCopy(file, { host } = {}) {
       const at = loadIndex().get(String(id));
       if (!at) return undefined;
       const record = JSON.parse(readRange(dataFile(file, meta.generation), at.offset, at.length).toString('utf8'));
-      const parent = at.position ? index.order[at.position - 1] : null;
+      const parent = at.position ? index.idAt(at.position - 1) : null;
       return itemOf(record, parent).entry;
     },
     /** The raw record's JSON bytes, paged like openPiSessionRange.entryBytes; `format: 'durable-json'`. */
