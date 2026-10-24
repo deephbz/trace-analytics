@@ -52,8 +52,9 @@ test('spendLabel equals AmPi money() when nothing is left out, and names the gap
   for (const [usd, money] of [[0, '$0'], [0.004, '<$0.01'], [0.25, '$0.25'], [12.5, '$12.50']]) {
     assert.equal(spendLabel(durableSpend({ models: { m: { cost: { total: usd } } } })), money);
   }
-  assert.equal(spendLabel(piSpendOfTotal(0.25)), '$0.25 (excludes failed, compaction, tools)');
-  assert.equal(spendLabel(piSpendOfTotal(0)), '$0 (excludes failed, compaction, tools)');
+  assert.equal(spendLabel(piSpendOfTotal(0.25)), '$0.25 (excludes compaction, tool model calls)');
+  assert.equal(spendLabel(piSpendOfTotal(0)), '$0 (excludes compaction, tool model calls)');
+  assert.equal(spendLabel(piSpendOfTotal(null)), 'no price reported', 'the same words as a durable Session with no price');
   assert.equal(piSpendOfTotal(Number.NaN).usd, null);
 });
 

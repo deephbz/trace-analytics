@@ -21,11 +21,11 @@ test('rule: a durable Session spends what pi.usage holds, models and tools toget
   assert.equal(durableSpend(undefined).usd, null, 'no usage doc is unknown, never zero');
 });
 
-test('rule: a Pi Session covers responses only, and says so', () => {
+test('rule: a Pi Session covers responses and failed attempts, and says so', () => {
   const s = piSpend([{ usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.25 } }, { kind: 'human' },
     { usage: { input: 1, output: 1, cost: { total: 0.5 } } }]);
-  assert.deepEqual(s, { rule: SPEND_RULE, usd: 0.75, tokens: 17, covers: ['responses'] });
-  assert.equal(spendLabel(s), '$0.75 (excludes failed, compaction, tools)');
+  assert.deepEqual(s, { rule: SPEND_RULE, usd: 0.75, tokens: 17, covers: ['responses', 'failed'] });
+  assert.equal(spendLabel(s), '$0.75 (excludes compaction, tool model calls)');
   assert.equal(piSpend([{ usage: { input: 3 } }]).usd, null, 'no price stays null');
 });
 
@@ -34,9 +34,9 @@ test('rule: a mixed Team sums its members under one rule and labels the gap', ()
   const pi = piSpend([{ usage: { input: 10, output: 5, cost: 0.5 } }]);
   const team = teamSpend([durable, pi]);
   assert.equal(team.usd, 1.5);
-  assert.deepEqual(team.covers, ['responses']);
+  assert.deepEqual(team.covers, ['responses', 'failed']);
   assert.equal(team.mixed, true);
-  assert.equal(spendLabel(team), '$1.50 (some members exclude failed, compaction, tools)');
+  assert.equal(spendLabel(team), '$1.50 (some Sessions exclude compaction, tool model calls)');
   const pure = teamSpend([durable, durable]);
   assert.deepEqual(pure.covers, [...CLASSES]);
   assert.equal(pure.mixed, undefined);
