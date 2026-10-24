@@ -119,6 +119,60 @@ export function durableItem(record, { host, threadId, parent = null, extractors 
   return { entry: e, source, semantics };
 }
 
+const iso = (t) => typeof t === 'number' && Number.isFinite(t) ? new Date(t).toISOString() : null;
+/**
+ * The Pi JSONL shape of one durable record, for published readers that take native Pi entries
+ * (Rarebit's selector, Find's text mirror). Compatibility only: durableItem stays the semantic
+ * mapper, and kinds without a Pi analog become `{ type: 'durable' }`, which those readers skip.
+ */
+export function piShaped(record) {
+  const id = String(record.id);
+  const messages = Array.isArray(record.model) ? record.model : [];
+  const m = messages[0] ?? {};
+  const timestamp = iso(m.timestamp);
+  switch (record.kind) {
+    case 'pi.user': case 'pi.assistant': case 'pi.tool-result':
+      return { type: 'message', id, parentId: null, timestamp, message: m };
+    case 'pi.compaction':
+      return { type: 'compaction', id, parentId: null, timestamp, summary: textOf(m.content) };
+    default:
+      if (record.kind.startsWith('pi.')) return { type: 'durable', id, kind: record.kind, timestamp };
+      if (messages.length) return { type: 'custom_message', id, parentId: null, timestamp, customType: record.kind, content: messagesText(messages), display: true };
+      return { type: 'custom', id, parentId: null, timestamp, customType: record.kind, data: record.data ?? null };
+  }
+}
+
+/** An empty running summary of a durable history; foldSession adds one entry at a time. */
+export const emptySessionFold = () => ({ entries: 0, lastId: null, started: null, updated: null, humanTurns: 0, firstAsk: null, lastAsk: null,
+  lastReply: null, leader: false, inheritedUntil: null });
+const proseOf = (e) => e.blocks?.filter((b) => b.type === 'text').map((b) => b.text).join('\n') ?? null;
+/** Adds one ReaderItem to a running summary. `own` is the conversation ID; entries of other conversations are inherited fork history. */
+export function foldSession(fold, { entry: e, source }, own) {
+  fold.entries++; fold.lastId = e.id;
+  if (e.t !== null) { fold.started = fold.started === null ? e.t : Math.min(fold.started, e.t); fold.updated = fold.updated === null ? e.t : Math.max(fold.updated, e.t); }
+  if (e.kind === 'human') { fold.humanTurns++; fold.firstAsk ??= proseOf(e); fold.lastAsk = proseOf(e); }
+  if (e.kind === 'assistant' && e.blocks.some((b) => b.type === 'text' && b.text.trim())) fold.lastReply = proseOf(e);
+  if (e.blocks?.some((b) => b.type === 'toolCall' && LEADER.has(b.name))) fold.leader = true;
+  if (own !== undefined && source?.conversationId !== undefined && String(source.conversationId) !== String(own) && e.t !== null)
+    fold.inheritedUntil = Math.max(fold.inheritedUntil ?? e.t, e.t);
+  return fold;
+}
+
+/** SESSION record (src/record.mjs) for a durable conversation, from its history summary, conversation and docs. Role is a provisional inference (K5.I4). */
+export function durableSessionRecord({ host, threadId, fold, conversation, docs = {} }) {
+  if (!conversation) return null;
+  const { storeId } = parseThread(threadId);
+  const session = sessionIdOf(threadId);
+  const cwd = docs['pi.agent']?.cwd ?? null;
+  const parent = conversation.parent ? sessionIdOf(`${storeId}.${conversation.parent.conversationId}`) : null;
+  return { reader: READER_VERSION, id: session, host, ref: sessionRef(host, session), harness: HARNESS, session: threadId,
+    role: fold.leader ? 'leader' : conversation.owner ? 'worker' : 'solo', parent,
+    forkAt: conversation.parent ? entryRef(host, parent, String(conversation.parent.at)) : null,
+    owner: conversation.owner ? { session: sessionIdOf(`${storeId}.${conversation.owner.conversationId}`), task: conversation.owner.taskId } : null,
+    cwd, scratch: isScratch(cwd), path: null, started: fold.started, updated: fold.updated, archived: false, branch: 'complete',
+    humanTurns: fold.humanTurns, resume: null, title: null, firstAsk: fold.firstAsk, lastAsk: fold.lastAsk, lastReply: fold.lastReply };
+}
+
 /** Error from the node or the transport. `code` follows the node protocol. */
 const codeOf = (error) => error?.code ?? 'unavailable';
 const digest = (record) => createHash('sha256').update(JSON.stringify(record)).digest('hex');
@@ -129,9 +183,12 @@ export const SNAPSHOT_FORMAT = 'durable-reader/1';
  * node's reader service (durable-wire.mjs): open, entries, fence, raw, cancel, watch, close.
  * Nothing is read until refresh(). `onChange` hears watch invalidations. `restore` is a snapshot()
  * from an earlier reader; the first refresh validates it against the node before trusting it.
+ * With `retain: false` the reader holds only its checkpoint (last ID, boundary digest, lineage):
+ * each refresh returns the raw `records` it absorbed, for a caller that keeps its own disk copy,
+ * and page, entry, visit and session have nothing to read.
  */
 export function openDurableSession({ node, threadId, host, pageLimit = 100, extractors = {}, onChange,
-  maxEntryBytes = 16 << 20, restore } = {}) {
+  maxEntryBytes = 16 << 20, restore, retain = true } = {}) {
   host = checkHost(host);
   parseThread(threadId);
   if (!Number.isInteger(pageLimit) || pageLimit < 1 || pageLimit > MAX_LIMIT) throw new Error(`Page limit must be 1..${MAX_LIMIT}`);
@@ -143,7 +200,7 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
   if (restore) {
     if (restore.format !== SNAPSHOT_FORMAT || restore.reader !== READER_VERSION || restore.host !== host || restore.threadId !== threadId) pendingReset = 'incompatible';
     else {
-      items = restore.items.slice(); byId = new Map(items.map((i) => [i.entry.id, i]));
+      items = retain ? restore.items.slice() : []; byId = new Map(items.map((i) => [i.entry.id, i]));
       lineage = restore.lineage; lastId = restore.lastId; boundary = restore.boundary;
     }
   }
@@ -210,15 +267,16 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
       from = page.last + 1;
     }
   }
-  function absorb(records) {
+  function absorb(records, fresh) {
     const added = [];
     for (const r of records) {
       if (lastId !== null && r.id <= lastId) continue;
-      const parent = items.length ? items.at(-1).entry.id : null;
+      const parent = lastId === null ? null : String(lastId);
       const item = durableItem(r, { host, threadId, parent, extractors });
       if (r.oversized) item.source.oversized = r.oversized;
       stats.normalized++;
-      items.push(item); byId.set(item.entry.id, item); lastId = r.id; boundary = digest(r); added.push(item.entry);
+      if (retain) { items.push(item); byId.set(item.entry.id, item); }
+      lastId = r.id; boundary = digest(r); added.push(item.entry); fresh.push(r);
     }
     return added;
   }
@@ -227,8 +285,8 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
     if (closed) throw new Error('Reader is closed');
     let reason = pendingReset;
     pendingReset = null;
-    const drop = (why) => { reinit(); reason ??= why; stats.resets++; };
-    const added = [];
+    const added = [], fresh = [];
+    const drop = (why) => { reinit(); reason ??= why; stats.resets++; added.length = 0; fresh.length = 0; };
     try {
       if (!attachment) await attach();
       if (lineage !== undefined && lineage !== lineageOf(conversation)) drop('lineage');
@@ -244,7 +302,7 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
             records = await scan({ maxEntryId: upper });
           }
           attachment.verified = true;
-          added.push(...absorb(records));
+          added.push(...absorb(records, fresh));
         }
         lineage ??= lineageOf(conversation);
         stats.scans++;
@@ -259,7 +317,8 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
       error = { code: codeOf(e), message: e?.message ?? String(e) };
     }
     const reset = reason !== null;
-    return { reset, ...(reset ? { resetReason: reason } : {}), added: reset ? items.map((i) => i.entry) : added, status, ...(error ? { error } : {}) };
+    // After a reset, `added` and `records` hold the whole new history this refresh read.
+    return { reset, ...(reset ? { resetReason: reason } : {}), added: reset && retain ? items.map((i) => i.entry) : added, records: fresh, status, ...(error ? { error } : {}) };
   }
 
   let queue = Promise.resolve();
@@ -285,27 +344,16 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
     snapshot() {
       if (lastId === null) return null;
       return { format: SNAPSHOT_FORMAT, reader: READER_VERSION, host, threadId, lineage, lastId, boundary,
-        items: JSON.parse(JSON.stringify(items)) };
+        items: retain ? JSON.parse(JSON.stringify(items)) : [] };
     },
     /** SESSION record (src/record.mjs). Role is a provisional inference (K5.I4). */
     session() {
-      if (!conversation) return null;
-      const { storeId } = parseThread(threadId);
-      const humans = items.filter((i) => i.entry.kind === 'human');
-      const replies = items.filter((i) => i.entry.kind === 'assistant' && i.entry.blocks.some((b) => b.type === 'text' && b.text.trim()));
-      const leader = items.some((i) => i.entry.blocks?.some((b) => b.type === 'toolCall' && LEADER.has(b.name)));
-      const times = items.map((i) => i.entry.t).filter((t) => t !== null);
-      const cwd = docs['pi.agent']?.cwd ?? null;
-      const parent = conversation.parent ? sessionIdOf(`${storeId}.${conversation.parent.conversationId}`) : null;
-      const prose = (i) => i?.entry.blocks?.filter((b) => b.type === 'text').map((b) => b.text).join('\n') ?? null;
-      return { reader: READER_VERSION, id: session, host, ref: sessionRef(host, session), harness: HARNESS, session: threadId,
-        role: leader ? 'leader' : conversation.owner ? 'worker' : 'solo', parent,
-        forkAt: conversation.parent ? entryRef(host, parent, String(conversation.parent.at)) : null,
-        owner: conversation.owner ? { session: sessionIdOf(`${storeId}.${conversation.owner.conversationId}`), task: conversation.owner.taskId } : null,
-        cwd, scratch: isScratch(cwd), path: null, started: times.length ? Math.min(...times) : null,
-        updated: times.length ? Math.max(...times) : null, archived: false, branch: 'complete', humanTurns: humans.length,
-        resume: null, title: null, firstAsk: prose(humans[0]), lastAsk: prose(humans.at(-1)), lastReply: prose(replies.at(-1)) };
+      const own = conversation?.id ?? parseThread(threadId).conversationId;
+      const fold = items.reduce((f, i) => foldSession(f, i, own), emptySessionFold());
+      return durableSessionRecord({ host, threadId, fold, conversation, docs });
     },
+    /** The node's conversation descriptor (parent, owner) from the last watch frame. */
+    conversation() { return conversation; },
     /** History TranscriptEntries, oldest first. */
     entries() { return items.map((i) => i.entry); },
     /** Entry IDs of the model's active context at the last watch frame; `complete` is false when the node cut its ranges. */
