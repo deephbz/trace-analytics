@@ -5,29 +5,52 @@
 //   openDurableCopy(file) ──► visit / entry / entryBytes / session, streamed from disk
 //
 // The copy owns no source facts. The node stays the authority; a copy is deletable and rebuilds
-// from the node. Files, beside each other:
-//   <file>           JSONL, one raw EntryRecord (or oversized stub) per line, history order
-//   <file>.idx       JSONL, one [id, offset, length] per record line
-//   <file>.meta.json format, Host, thread, generation, committed byte and line counts, the
-//                    reader checkpoint, conversation, docs, the Session head and the running session fold
-// The meta file commits a write: readers see only the committed prefix, and the next write
-// truncates any uncommitted tail first. A reset rewrites the copy under a new generation.
+// from the node. Files, beside each other (durableCopyFiles names them):
+//   <file>.g-<generation>      JSONL, one raw EntryRecord (or oversized stub) per line, history order
+//   <file>.g-<generation>.idx  JSONL, one [id, offset, length] per record line
+//   <file>.meta.json           format, Host, thread, generation, committed byte and line counts, the
+//                              reader checkpoint, conversation, docs, the Session head and the running session fold
+// The meta file commits a write, by an atomic rename: readers see only the committed prefix of the
+// generation it names, and the next write truncates any uncommitted tail first. A reset writes a new
+// generation beside the committed one and removes the older generations after its meta commits, so a
+// kill at any point leaves a whole committed copy. A bundle whose data or index file is missing or
+// shorter than its meta states has no checkpoint: the next write starts a new generation.
 // A reader holds the offset index and the fold, never the whole history.
 import { randomBytes } from 'node:crypto';
-import { closeSync, existsSync, ftruncateSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, ftruncateSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { READER_VERSION } from '../record.mjs';
 import { durableItem, durableSessionRecord, emptySessionFold, foldSession, HARNESS, parseThread, piShaped, sessionHeadOf } from './durable.mjs';
 import { checkHost } from './session-state.mjs';
 
-export const COPY_FORMAT = 'durable-copy/1';
+export const COPY_FORMAT = 'durable-copy/2';
 const CHUNK = 1 << 20;
 
 const metaFile = (file) => `${file}.meta.json`;
-const idxFile = (file) => `${file}.idx`;
+const dataFile = (file, generation) => `${file}.g-${generation}`;
+const idxFile = (file, generation) => `${dataFile(file, generation)}.idx`;
 function readMeta(file) {
-  if (!existsSync(metaFile(file))) return null;
-  const meta = JSON.parse(readFileSync(metaFile(file), 'utf8'));
-  return meta.format === COPY_FORMAT && meta.reader === READER_VERSION ? meta : null;
+  let meta;
+  try { meta = JSON.parse(readFileSync(metaFile(file), 'utf8')); } catch { return null; }
+  return meta?.format === COPY_FORMAT && meta.reader === READER_VERSION ? meta : null;
+}
+const sizeOf = (path) => { try { return statSync(path).size; } catch { return -1; } };
+/** The committed meta when its generation's data and index files hold at least the committed bytes. */
+function wholeMeta(file) {
+  const meta = readMeta(file);
+  return meta && sizeOf(dataFile(file, meta.generation)) >= meta.bytes && sizeOf(idxFile(file, meta.generation)) >= meta.idxBytes ? meta : null;
+}
+/** Remove every generation of `file` except `keep`, and the durable-copy/1 layout's files. */
+function removeGenerations(file, keep) {
+  const prefix = `${basename(file)}.g-`;
+  let names = [];
+  try { names = readdirSync(dirname(file)); } catch {}
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const generation = name.slice(prefix.length).replace(/\.idx$/, '');
+    if (generation !== keep) rmSync(join(dirname(file), name), { force: true });
+  }
+  for (const legacy of [file, `${file}.idx`]) rmSync(legacy, { force: true });
 }
 function writeMeta(file, meta) {
   const tmp = `${metaFile(file)}.${process.pid}.tmp`;
@@ -35,15 +58,25 @@ function writeMeta(file, meta) {
   renameSync(tmp, metaFile(file));
 }
 
-/** The checkpoint a copy was last written with, to restore an openDurableSession; null when there is no usable copy. */
+/**
+ * The checkpoint a copy was last written with, to restore an openDurableSession; null when there is
+ * no usable copy: no meta, another Host or thread, or a data or index file missing or short.
+ */
 export function durableCopyCheckpoint(file, { host, threadId }) {
-  const meta = readMeta(file);
+  const meta = wholeMeta(file);
   return meta && meta.host === host && meta.threadId === threadId ? meta.checkpoint : null;
 }
 
-/** Remove a copy and its sidecars. */
+/** The bundle's files: its meta, and the data and index files of the committed generation (null without meta). */
+export function durableCopyFiles(file) {
+  const meta = readMeta(file);
+  return { meta: metaFile(file), data: meta ? dataFile(file, meta.generation) : null, index: meta ? idxFile(file, meta.generation) : null };
+}
+
+/** Remove a copy: its meta first, so no reader trusts a partial bundle, then every generation. */
 export function removeDurableCopy(file) {
-  for (const f of [file, idxFile(file), metaFile(file)]) rmSync(f, { force: true });
+  rmSync(metaFile(file), { force: true });
+  removeGenerations(file, null);
 }
 
 /**
@@ -54,14 +87,15 @@ export function removeDurableCopy(file) {
 export function writeDurableCopy(file, { host, threadId, reset, records, checkpoint, conversation, docs = {} }) {
   host = checkHost(host);
   const { conversationId } = parseThread(threadId);
-  let meta = readMeta(file);
+  let meta = wholeMeta(file);
   if (meta && (meta.host !== host || meta.threadId !== threadId)) meta = null;
   const fresh = reset || !meta;
   if (fresh) {
     meta = { format: COPY_FORMAT, reader: READER_VERSION, host, threadId, generation: randomBytes(6).toString('hex'),
       bytes: 0, idxBytes: 0, lines: 0, fold: emptySessionFold() };
   }
-  const fd = openSync(file, fresh ? 'w' : 'r+', 0o600), ifd = openSync(idxFile(file), fresh ? 'w' : 'r+', 0o600);
+  // A new generation never opens the committed one's files: until its meta commits, the old copy stays whole.
+  const fd = openSync(dataFile(file, meta.generation), fresh ? 'w' : 'r+', 0o600), ifd = openSync(idxFile(file, meta.generation), fresh ? 'w' : 'r+', 0o600);
   try {
     // An uncommitted tail from an interrupted write is never visible; drop it.
     ftruncateSync(fd, meta.bytes); ftruncateSync(ifd, meta.idxBytes);
@@ -81,6 +115,7 @@ export function writeDurableCopy(file, { host, threadId, reset, records, checkpo
       conversation, docs, head: sessionHeadOf({ conversation, docs }) };
   } finally { closeSync(fd); closeSync(ifd); }
   writeMeta(file, meta);
+  if (fresh) removeGenerations(file, meta.generation);
   return meta;
 }
 
@@ -98,7 +133,7 @@ export function openDurableCopy(file, { host } = {}) {
     index = new Map();
     const order = [];
     if (meta.idxBytes) {
-      const lines = readRange(idxFile(file), 0, meta.idxBytes).toString('utf8').split('\n');
+      const lines = readRange(idxFile(file, meta.generation), 0, meta.idxBytes).toString('utf8').split('\n');
       for (const line of lines) if (line) { const [id, offset, length] = JSON.parse(line); index.set(id, { offset, length, position: order.length }); order.push(id); }
     }
     index.order = order;
@@ -127,7 +162,7 @@ export function openDurableCopy(file, { host } = {}) {
       assertOpen();
       const next = readMeta(file);
       if (!next || next.host !== host) throw new Error('No durable copy for this Host; rebuild it from the node');
-      if (statSync(file).size < next.bytes) throw new Error('Copy is shorter than its committed length; rebuild it from the node');
+      if (sizeOf(dataFile(file, next.generation)) < next.bytes) throw new Error('Copy is shorter than its committed length; rebuild it from the node');
       const reset = meta !== null && meta.generation !== next.generation;
       meta = next; index = null;
       return { reset, added: 0, ...info() };
@@ -155,7 +190,7 @@ export function openDurableCopy(file, { host } = {}) {
         if (!at) throw new Error('Entry is not in this Session history');
         start = at.offset + at.length + 1; position = at.position + 1; parent = String(after);
       }
-      const fd = openSync(file, 'r');
+      const fd = openSync(dataFile(file, meta.generation), 'r');
       try {
         let carry = Buffer.alloc(0), offset = start;
         while (offset < meta.bytes) {
@@ -180,7 +215,7 @@ export function openDurableCopy(file, { host } = {}) {
       if (wanted && wanted !== version()) throw new Error('Entry reference is stale');
       const at = loadIndex().get(String(id));
       if (!at) return undefined;
-      const record = JSON.parse(readRange(file, at.offset, at.length).toString('utf8'));
+      const record = JSON.parse(readRange(dataFile(file, meta.generation), at.offset, at.length).toString('utf8'));
       const parent = at.position ? index.order[at.position - 1] : null;
       return itemOf(record, parent).entry;
     },
@@ -191,7 +226,7 @@ export function openDurableCopy(file, { host } = {}) {
       const at = loadIndex().get(String(id));
       if (!at) throw new Error('Entry offset unavailable');
       const remaining = Math.max(0, at.length - offset);
-      const buffer = readRange(file, at.offset + offset, Math.min(limit, remaining));
+      const buffer = readRange(dataFile(file, meta.generation), at.offset + offset, Math.min(limit, remaining));
       let length = buffer.length;
       if (remaining > length) {
         let first = length - 1;

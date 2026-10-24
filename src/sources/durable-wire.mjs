@@ -146,6 +146,7 @@ export function createReaderService({ resolve, context, epoch = 1, limits = LIMI
     const h = handles.get(handle);
     if (!h) return;
     handles.delete(handle);
+    if (h.export) stats.exports--;
     h.export = null;
     stats.closed++;
     try { await h.watch.stop(); } catch {}

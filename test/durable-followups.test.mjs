@@ -97,10 +97,12 @@ test('responseWriter: waits for drain, and rejects when the client closed before
   const response = (accepts) => Object.assign(new EventEmitter(), { destroyed: false, write: () => accepts });
   const fast = response(true);
   assert.equal(responseWriter(fast)(Buffer.from('a')), undefined, 'no wait while the response accepts bytes');
-  const slow = response(false), waiting = responseWriter(slow)(Buffer.from('a'));
+  // The writer keeps one `close` listener for its abort signal; each wait adds one more and removes it.
+  const slow = response(false), slowWrite = responseWriter(slow), idle = slow.listenerCount('close');
+  const waiting = slowWrite(Buffer.from('a'));
   slow.emit('drain');
   await waiting;
-  assert.equal(slow.listenerCount('close'), 0, 'the wait removes its listeners');
+  assert.equal(slow.listenerCount('close'), idle, 'the wait removes its listeners');
   const gone = response(false);
   gone.destroyed = true;
   assert.throws(() => responseWriter(gone)(Buffer.from('a')), /client closed/, 'a response closed before the write never waits');

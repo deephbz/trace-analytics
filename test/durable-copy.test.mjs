@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { openDurableSession, piShaped } from '../src/sources/durable.mjs';
-import { durableCopyCheckpoint, openDurableCopy, removeDurableCopy, writeDurableCopy } from '../src/sources/durable-copy.mjs';
+import { durableCopyCheckpoint, durableCopyFiles, openDurableCopy, removeDurableCopy, writeDurableCopy } from '../src/sources/durable-copy.mjs';
 
 let fixture;
 try {
@@ -68,7 +68,7 @@ test('real store: appends commit incrementally; a restart restores the checkpoin
   const a = openDurableSession({ node, threadId, host: HOST, retain: false });
   t.after(() => a.close());
   await sync(a, file);
-  const before = statSync(file).size;
+  const before = statSync(durableCopyFiles(file).data).size;
   const copy = openDurableCopy(file, { host: HOST });
   const v1 = copy.refresh().version;
   const tip = copy.session().tip;
@@ -76,7 +76,7 @@ test('real store: appends commit incrementally; a restart restores the checkpoin
   const change = await sync(a, file);
   assert.equal(change.reset, false);
   assert.ok(change.records.length >= 2 && change.records.length <= 3, 'only new records are written');
-  assert.ok(statSync(file).size > before);
+  assert.ok(statSync(durableCopyFiles(file).data).size > before);
   const second = copy.refresh();
   assert.equal(second.reset, false);
   assert.ok(copy.continues(v1), 'the same generation continues the older version');
@@ -127,14 +127,14 @@ test('copy: an uncommitted tail is invisible and the next write drops it', () =>
     const rec = (id, text) => ({ id, conversationId: 1, kind: 'pi.user', model: [{ role: 'user', content: text, timestamp: 1000 + id }] });
     const conversation = { id: 1 };
     writeDurableCopy(file, { host: HOST, threadId, reset: true, records: [rec(1, 'a'), rec(2, 'b')], checkpoint: null, conversation });
-    appendFileSync(file, `${JSON.stringify(rec(3, 'torn'))}\n`);
+    appendFileSync(durableCopyFiles(file).data, `${JSON.stringify(rec(3, 'torn'))}\n`);
     const copy = openDurableCopy(file, { host: HOST });
     copy.refresh();
     assert.deepEqual(visitAll(copy).map((r) => r.entry.id), ['1', '2']);
     writeDurableCopy(file, { host: HOST, threadId, reset: false, records: [rec(3, 'c')], checkpoint: null, conversation });
     copy.refresh();
     assert.deepEqual(visitAll(copy).map((r) => r.entry.blocks[0].text), ['a', 'b', 'c']);
-    assert.equal(readFileSync(file, 'utf8').trim().split('\n').length, 3);
+    assert.equal(readFileSync(durableCopyFiles(file).data, 'utf8').trim().split('\n').length, 3);
     assert.equal(copy.session().humanTurns, 3);
     removeDurableCopy(file);
     assert.throws(() => copy.refresh(), /rebuild it from the node/);

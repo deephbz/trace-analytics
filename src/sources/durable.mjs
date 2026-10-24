@@ -189,11 +189,16 @@ export const SNAPSHOT_FORMAT = 'durable-reader/1';
 /**
  * The `write` for exportDurableRecords over an HTTP response: it waits for `drain` when the response
  * buffers, and throws once the client has closed. A response that closed before the write never emits
- * `close` again, so the write checks `destroyed` before and after it starts waiting.
+ * `close` again, so the write checks `destroyed` before and after it starts waiting. `write.signal`
+ * aborts when the client closes before the response ends: pass it as the export's `signal`, so an
+ * outstanding node read does not hold the export either.
  */
 export function responseWriter(res) {
   const gone = () => new Error('The client closed the raw export');
-  return (chunk) => {
+  const abort = new AbortController();
+  if (res.destroyed) abort.abort();
+  else res.once('close', () => { if (!res.writableFinished) abort.abort(); });
+  return Object.assign((chunk) => {
     if (res.destroyed) throw gone();
     if (res.write(chunk)) return undefined;
     return new Promise((resolve, reject) => {
@@ -202,7 +207,18 @@ export function responseWriter(res) {
       res.once('drain', done); res.once('close', closed);
       if (res.destroyed) closed();
     });
-  };
+  }, { signal: abort.signal });
+}
+
+/** Settle with `p`, or reject with code `aborted` as soon as `signal` aborts; `p` keeps running. */
+function abortable(p, signal) {
+  if (!signal) return p;
+  return new Promise((resolve, reject) => {
+    const aborted = () => reject(Object.assign(new Error('The raw export was aborted'), { code: 'aborted' }));
+    if (signal.aborted) return aborted();
+    signal.addEventListener('abort', aborted, { once: true });
+    p.then(resolve, reject).finally(() => signal.removeEventListener('abort', aborted));
+  });
 }
 
 /**
@@ -211,20 +227,27 @@ export function responseWriter(res) {
  * checked after the last chunk. A record past `maxEntryBytes` is written as its stub. `start({version})`
  * runs once before the first byte. `write(chunk)` may return a promise, for backpressure. A failure
  * after `start` throws: the caller must end the output as failed, never as complete.
+ * `signal` (an AbortSignal, such as the HTTP client's close) ends the export at once, with code
+ * `aborted`, even while a node read is outstanding: each read gets `{ signal }` as its second
+ * argument, so a node can drop it, and the handle is closed without waiting for the node.
  */
-export async function exportDurableRecords({ node, threadId, host, write, start, pageLimit = 100, maxEntryBytes = 64 << 20 } = {}) {
+export async function exportDurableRecords({ node, threadId, host, write, start, pageLimit = 100, maxEntryBytes = 64 << 20, signal } = {}) {
   host = checkHost(host);
   parseThread(threadId);
-  const { handle } = await node.open({ threadId });
+  const opening = node.open({ threadId });
+  // An open that answers after the abort still names a handle: close it then.
+  if (signal) opening.then(({ handle }) => { if (signal.aborted) node.close({ handle }).catch(() => {}); }, () => {});
+  const { handle } = await abortable(opening, signal);
+  const read = (op, args) => abortable(node[op](args, signal ? { signal } : undefined), signal);
   let exportId;
   try {
-    const { upper } = await node.fence({ handle });
+    const { upper } = await read('fence', { handle });
     const version = upper === null ? null : `${READER_VERSION}:${HARNESS}:${host}:${threadId}:${upper}`;
     await start?.({ version });
     let count = 0, bytes = 0;
     const line = async (chunk) => { bytes += chunk.length; await write(chunk); };
     for (let from; upper !== null;) {
-      const page = await node.entries({ handle, order: 'ascending', limit: pageLimit, maxEntryId: upper, ...(from === undefined ? {} : { minEntryId: from }) });
+      const page = await read('entries', { handle, order: 'ascending', limit: pageLimit, maxEntryId: upper, ...(from === undefined ? {} : { minEntryId: from }) });
       for (const item of page.items) {
         count++;
         if (item.type === 'entry') { await line(Buffer.from(`${JSON.stringify(item.record)}\n`)); continue; }
@@ -235,7 +258,7 @@ export async function exportDurableRecords({ node, threadId, host, write, start,
         const hash = createHash('sha256');
         exportId = undefined;
         for (let offset = 0; ;) {
-          const c = await node.raw({ handle, id: item.id, exportId, offset });
+          const c = await read('raw', { handle, id: item.id, exportId, offset });
           exportId = c.exportId;
           const part = Buffer.from(c.data, 'base64');
           hash.update(part); offset += part.length;
@@ -251,8 +274,12 @@ export async function exportDurableRecords({ node, threadId, host, write, start,
     }
     return { version, count, bytes };
   } finally {
-    if (exportId) await node.cancel({ handle, exportId }).catch(() => {});
-    await node.close({ handle }).catch(() => {});
+    // Closing the handle releases its export on the node too; after an abort, nothing waits for the node.
+    if (signal?.aborted) node.close({ handle }).catch(() => {});
+    else {
+      if (exportId) await node.cancel({ handle, exportId }).catch(() => {});
+      await node.close({ handle }).catch(() => {});
+    }
   }
 }
 
@@ -263,7 +290,8 @@ export async function exportDurableRecords({ node, threadId, host, write, start,
  * from an earlier reader; the first refresh validates it against the node before trusting it.
  * With `retain: false` the reader holds only its checkpoint (last ID, boundary digest, lineage):
  * each refresh returns the raw `records` it absorbed, for a caller that keeps its own disk copy,
- * and page, entry, visit and session have nothing to read.
+ * and page, entry, visit and session have nothing to read. `refresh({ sink })` bounds the refresh
+ * itself: see refresh.
  */
 export function openDurableSession({ node, threadId, host, pageLimit = 100, extractors = {}, onChange,
   maxEntryBytes = 16 << 20, restore, retain = true } = {}) {
@@ -301,26 +329,35 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
     try { a.watch?.stop(); } catch {}
     Promise.resolve().then(() => node.close({ handle: a.handle })).catch(() => {});
   }
+  const closedError = () => Object.assign(new Error('Reader is closed'), { code: 'closed' });
+  /** After each node answer: a reader closed meanwhile reads nothing more. */
+  const live = () => { if (closed) throw closedError(); };
   async function attach() {
     const opened = await node.open({ threadId });
+    // close() ran while the open was in flight: it saw no handle to close, so close this one.
+    if (closed) { node.close({ handle: opened.handle }).catch(() => {}); throw closedError(); }
     const a = { handle: opened.handle, epoch: opened.epoch, watch: null, verified: false };
     attachment = a;
     observe(opened.frame);
-    a.watch = await node.watch({ handle: a.handle }, (frame) => {
+    const watch = await node.watch({ handle: a.handle }, (frame) => {
       if (attachment !== a) return;
       observe(frame);
       if (status === 'ready') status = 'stale';
       onChange?.();
     }, () => { if (attachment === a) { attachment = null; if (status === 'ready') status = 'stale'; onChange?.(); } });
+    // A close or a transport end during the watch request detached `a` already; stop the watch it returned.
+    if (attachment !== a) { try { watch.stop(); } catch {} live(); throw Object.assign(new Error('The node ended the watch'), { code: 'unavailable' }); }
+    a.watch = watch;
   }
   /** An oversized item, reassembled from raw chunks and checked against its digest; a stub past maxEntryBytes. */
-  async function fetchRaw(item) {
+  async function fetchRaw(handle, item) {
     if (item.bytes > maxEntryBytes) return { id: item.id, conversationId: item.conversationId, kind: item.kind, oversized: { bytes: item.bytes, sha256: item.sha256 } };
     const parts = [];
     let exportId, offset = 0;
     try {
       for (;;) {
-        const c = await node.raw({ handle: attachment.handle, id: item.id, exportId, offset });
+        const c = await node.raw({ handle, id: item.id, exportId, offset });
+        live();
         stats.rawChunks++;
         exportId = c.exportId;
         const part = Buffer.from(c.data, 'base64');
@@ -328,20 +365,25 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
         if (c.done) break;
       }
     } catch (e) {
-      if (exportId) node.cancel({ handle: attachment?.handle, exportId }).catch(() => {});
+      // Closing the handle releases its export; only a still-open reader cancels it.
+      if (exportId && !closed) node.cancel({ handle, exportId }).catch(() => {});
       throw e;
     }
     const buf = Buffer.concat(parts);
     if (createHash('sha256').update(buf).digest('hex') !== item.sha256) throw Object.assign(new Error(`Entry ${item.id} changed during export`), { code: 'unavailable' });
     return JSON.parse(buf.toString('utf8'));
   }
-  async function scan({ minEntryId, maxEntryId }) {
-    const out = [];
+  /** Read the range a page at a time; `take(records)` absorbs each page before the next fetch, or returns false to stop. */
+  async function scan({ minEntryId, maxEntryId }, take) {
+    const { handle } = attachment;
     for (let from = minEntryId; ;) {
-      const page = await node.entries({ handle: attachment.handle, order: 'ascending', limit: pageLimit, maxEntryId, ...(from === undefined ? {} : { minEntryId: from }) });
+      const page = await node.entries({ handle, order: 'ascending', limit: pageLimit, maxEntryId, ...(from === undefined ? {} : { minEntryId: from }) });
+      live();
       stats.received += page.items.length;
-      for (const item of page.items) out.push(item.type === 'entry' ? item.record : await fetchRaw(item));
-      if (!page.more || page.last === null) return out;
+      const records = [];
+      for (const item of page.items) records.push(item.type === 'entry' ? item.record : await fetchRaw(handle, item));
+      if ((await take(records)) === false) return false;
+      if (!page.more || page.last === null) return true;
       from = page.last + 1;
     }
   }
@@ -359,37 +401,57 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
     return added;
   }
 
-  async function read() {
+  async function read({ sink } = {}) {
     if (closed) throw new Error('Reader is closed');
     let reason = pendingReset;
     pendingReset = null;
     const added = [], fresh = [];
-    const drop = (why) => { reinit(); reason ??= why; stats.resets++; added.length = 0; fresh.length = 0; };
+    // The sink's next batch replaces its content: after a reset, and first for a reader with no checkpoint.
+    let resetDue = reason !== null || lastId === null;
+    const drop = (why) => { reinit(); reason ??= why; stats.resets++; added.length = 0; fresh.length = 0; resetDue = true; };
+    const toSink = async (records) => {
+      try { await sink({ reset: resetDue, records }); }
+      catch (e) { throw Object.assign(new Error(`The refresh sink failed: ${e?.message ?? e}`), { code: 'sink_failed', cause: e }); }
+      resetDue = false;
+      live();
+    };
     try {
       if (!attachment) await attach();
       if (lineage !== undefined && lineage !== lineageOf(conversation)) drop('lineage');
       for (let round = 0; ; round++) {
         const seen = revision;
         const { upper } = await node.fence({ handle: attachment.handle });
+        live();
         if (lastId !== null && (upper === null || upper < lastId)) drop('shorter');
         if (upper !== null && (upper !== lastId || !attachment.verified)) {
-          let records = await scan({ maxEntryId: upper, ...(lastId === null ? {} : { minEntryId: lastId }) });
-          if (lastId !== null && (records[0]?.id !== lastId || digest(records[0]) !== boundary)) {
-            // The held prefix does not end in this history's entry: never join it.
+          let first = lastId !== null;
+          const take = async (records) => {
+            // The held prefix must end in this history's entry: never join it otherwise.
+            if (first) { first = false; if (records[0]?.id !== lastId || digest(records[0]) !== boundary) return false; }
+            if (!sink) { added.push(...absorb(records, fresh)); return true; }
+            const batch = [];
+            absorb(records, batch);
+            if (batch.length) await toSink(batch);
+            return true;
+          };
+          if (!(await scan({ maxEntryId: upper, ...(lastId === null ? {} : { minEntryId: lastId }) }, take))) {
             drop('divergent');
-            records = await scan({ maxEntryId: upper });
+            await scan({ maxEntryId: upper }, take);
           }
           attachment.verified = true;
-          added.push(...absorb(records, fresh));
         }
         lineage ??= lineageOf(conversation);
         stats.scans++;
         scanned = seen;
         if (revision === seen || round + 1 >= MAX_ROUNDS) break;
       }
+      // A history that became empty, or an empty first read, still replaces the sink's content.
+      if (sink && resetDue) await toSink([]);
       status = revision === scanned && attachment ? 'ready' : 'stale';
       error = null;
     } catch (e) {
+      // A failed sink holds less than this reader absorbed: close it, so the caller reopens from the sink's checkpoint.
+      if (codeOf(e) === 'sink_failed') closed = true;
       detach();
       status = codeOf(e) === 'not_found' ? 'not_found' : 'unavailable';
       error = { code: codeOf(e), message: e?.message ?? String(e) };
@@ -407,8 +469,14 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
   };
   return {
     host, threadId, ref: sessionRef(host, session),
-    /** Catch up to the node's current history. Never throws for node failure: see status and error. */
-    refresh() { const p = queue.then(read); queue = p.catch(() => {}); return p; },
+    /**
+     * Catch up to the node's current history. Never throws for node failure: see status and error.
+     * With `sink`, each page's absorbed raw records go to `await sink({ reset, records })` before the
+     * next page is fetched, and the result holds no records: the refresh keeps at most one page (and one
+     * oversized body up to maxEntryBytes) in memory. `reset` asks the sink to replace its content; the
+     * checkpoint, snapshot(), ends at the batch the sink receives. A sink that throws closes the reader.
+     */
+    refresh({ sink } = {}) { const p = queue.then(() => read({ sink })); queue = p.catch(() => {}); return p; },
     /** ready: absorbed the newest observed revision; stale: behind or detached; unavailable / not_found: node failed. */
     status() { return { status, ...(error ? { error } : {}) }; },
     info() {
