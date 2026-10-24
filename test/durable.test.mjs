@@ -18,7 +18,7 @@ const HOST = 'demo';
 async function store(t) {
   const dir = mkdtempSync(join(tmpdir(), 'durable-source-'));
   let { harness, root } = await fixture.openFixtureStore(join(dir, 'store.sqlite'));
-  const node = fixture.fakeNode(harness);
+  const node = fixture.serviceNode(harness);
   t.after(async () => { await node.harness.close(fixture.context); rmSync(dir, { recursive: true, force: true }); });
   return { dir, node, root, harness };
 }
@@ -173,7 +173,7 @@ test('real store: reconnect and node restart catch up without gaps or duplicates
   // Restart: the store reopens in a new Harness and the node epoch changes.
   await node.harness.close(fixture.context);
   const reopened = await fixture.openFixtureStore(join(dir, 'store.sqlite'));
-  node.harness = reopened.harness; node.epoch = 2;
+  node.restart(reopened.harness, 2);
   await fixture.ask(reopened.root, 'd');
   const out = await r.refresh();
   assert.equal(out.status, 'ready');
@@ -251,21 +251,21 @@ test('identity: thread keys split at the last dot and reject ref separators', ()
   for (const bad of ['12', '.1', 'a.', 'a/b.1', 'a#b.1']) assert.throws(() => parseThread(bad));
 });
 
-/** In-memory node over a mutable record list; `frames` lets a test inject a watch frame mid-scan. */
+/** In-memory node over a mutable record list; `duringScan` lets a test inject a watch frame mid-scan. */
 function memoryNode(records, conversation = { id: 4 }) {
+  const frame = () => ({ conversation: node.conversation, active: { count: 0, ranges: [], complete: true }, docs: {} });
   const node = { records, conversation, watchers: [], duringScan: null,
-    async open() { return { handle: 'h', epoch: 1, conversation: node.conversation, activeEntryIds: [], watchRevision: 0 }; },
-    async entries({ order, minEntryId = -Infinity, maxEntryId = Infinity, limit, cursor }) {
-      let rows = node.records.filter((r) => r.id >= minEntryId && r.id <= maxEntryId);
-      if (order === 'descending') rows.reverse();
-      const from = cursor?.at ?? 0;
-      const items = rows.slice(from, from + limit);
-      if (order === 'ascending' && node.duringScan) { const f = node.duringScan; node.duringScan = null; f(); }
-      return { items, ...(from + limit < rows.length ? { next: { at: from + limit } } : {}) };
+    async open() { return { handle: 'h', epoch: 1, frame: frame() }; },
+    async fence() { return { upper: node.records.at(-1)?.id ?? null, watchRevision: 0 }; },
+    async entries({ minEntryId = -Infinity, maxEntryId = Infinity, limit }) {
+      const rows = node.records.filter((r) => r.id >= minEntryId && r.id <= maxEntryId);
+      const items = rows.slice(0, limit).map((record) => ({ type: 'entry', record }));
+      if (node.duringScan) { const f = node.duringScan; node.duringScan = null; f(); }
+      return { items, more: rows.length > limit, last: items.at(-1)?.record.id ?? null };
     },
     async watch(_h, onFrame) { node.watchers.push(onFrame); return { stop() {} }; },
     async close() {},
-    frame() { for (const w of node.watchers) w({ conversation: node.conversation, activeEntryIds: [] }); },
+    frame() { for (const w of node.watchers) w(frame()); },
   };
   return node;
 }

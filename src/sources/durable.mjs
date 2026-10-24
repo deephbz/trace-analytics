@@ -1,18 +1,22 @@
 // Durable source: one pi-durable conversation, read only through its node (D10, K5.I1).
 // Contract and rationale: HyperCarrier apps/ampi/docs/durable/reader-design.md.
 //
-//   node.open ──► fence probe (entries desc, 1) ──► entries asc (lastId..fence, cursor pages)
-//        └► watch frames: active-context ids, revision ──► dirty ──► next refresh catches up
+//   node.open ──► fence (newest ID) ──► entries asc (lastId..fence, budgeted pages; oversized → raw chunks)
+//        └► watch frames: active-context ranges, bounded docs, revision ──► dirty ──► next refresh
 //
 // History is the conversation's fork-aware `entries()` sequence. Entry IDs are store-wide and
 // ascending in history order, so the last absorbed ID is the incremental checkpoint. A catch-up
-// scan starts at that ID inclusively: its first item must be the boundary entry, otherwise the
-// held prefix is unverified and the reader resets. The watch only invalidates; it never carries
-// history, and nothing is replayed after a reconnect.
+// scan starts at that ID inclusively: its first record must be the boundary entry with the same
+// bytes (sha256), otherwise the held prefix is shorter or divergent and the reader resets with
+// that reason. A restored snapshot passes the same check before it is trusted. The watch only
+// invalidates; it never carries history, and nothing is replayed after a reconnect.
 //
 // The node client is injected; this file never opens a store and never imports pi-durable.
-// The Host is configured, never derived from the transport (K5.I3). The index is in memory.
+// The Host is configured, never derived from the transport (K5.I3). The index is in memory;
+// snapshot() is the caller's persistence seam.
+import { createHash } from 'node:crypto';
 import { READER_VERSION } from '../record.mjs';
+import { expandRanges } from './durable-wire.mjs';
 import { checkHost, entryRef, injected, isScratch, sessionRef, textOf } from './session-state.mjs';
 
 export const HARNESS = 'pi-durable';
@@ -117,34 +121,43 @@ export function durableItem(record, { host, threadId, parent = null, extractors 
 
 /** Error from the node or the transport. `code` follows the node protocol. */
 const codeOf = (error) => error?.code ?? 'unavailable';
+const digest = (record) => createHash('sha256').update(JSON.stringify(record)).digest('hex');
+export const SNAPSHOT_FORMAT = 'durable-reader/1';
 
 /**
- * Open one durable conversation for incremental reading through `node`:
- *   open({threadId}) → {handle, epoch, conversation, activeEntryIds, watchRevision}
- *   entries({handle, order, minEntryId?, maxEntryId?, limit, cursor?}) → {items, next?}
- *   watch({handle}, onFrame, onEnd) → {stop()}; frames {epoch, watchRevision, conversation, activeEntryIds}
- *   close({handle})
- * Nothing is read until refresh(). `onChange` hears watch invalidations.
+ * Open one durable conversation for incremental reading through `node`, one connection of the
+ * node's reader service (durable-wire.mjs): open, entries, fence, raw, cancel, watch, close.
+ * Nothing is read until refresh(). `onChange` hears watch invalidations. `restore` is a snapshot()
+ * from an earlier reader; the first refresh validates it against the node before trusting it.
  */
-export function openDurableSession({ node, threadId, host, pageLimit = 100, extractors = {}, onChange } = {}) {
+export function openDurableSession({ node, threadId, host, pageLimit = 100, extractors = {}, onChange,
+  maxEntryBytes = 16 << 20, restore } = {}) {
   host = checkHost(host);
   parseThread(threadId);
   if (!Number.isInteger(pageLimit) || pageLimit < 1 || pageLimit > MAX_LIMIT) throw new Error(`Page limit must be 1..${MAX_LIMIT}`);
   const session = sessionIdOf(threadId);
-  let items, byId, lineage, lastId;
-  const reinit = () => { items = []; byId = new Map(); lineage = undefined; lastId = null; };
+  let items, byId, lineage, lastId, boundary;
+  const reinit = () => { items = []; byId = new Map(); lineage = undefined; lastId = null; boundary = null; };
   reinit();
-  let attachment = null; // { handle, epoch, watch }
+  let pendingReset = null; // a reset decided before the first refresh (an incompatible snapshot)
+  if (restore) {
+    if (restore.format !== SNAPSHOT_FORMAT || restore.reader !== READER_VERSION || restore.host !== host || restore.threadId !== threadId) pendingReset = 'incompatible';
+    else {
+      items = restore.items.slice(); byId = new Map(items.map((i) => [i.entry.id, i]));
+      lineage = restore.lineage; lastId = restore.lastId; boundary = restore.boundary;
+    }
+  }
+  let attachment = null; // { handle, epoch, watch, verified }
   let revision = 0, scanned = -1; // watch revision seen, and the one the last scan absorbed
-  let active = [], conversation = null, docs = {};
+  let active = [], activeComplete = true, conversation = null, docs = {}, clipped = {};
   let status = 'stale', error = null, closed = false;
-  const stats = { received: 0, normalized: 0, scans: 0, resets: 0 };
+  const stats = { received: 0, normalized: 0, scans: 0, resets: 0, rawChunks: 0 };
 
-  const sameLineage = (c) => JSON.stringify({ parent: c?.parent ?? null, owner: c?.owner ?? null }) === lineage;
+  const lineageOf = (c) => JSON.stringify({ parent: c?.parent ?? null, owner: c?.owner ?? null });
   function observe(frame) {
     if (frame.conversation) conversation = frame.conversation;
-    if (Array.isArray(frame.activeEntryIds)) active = frame.activeEntryIds.map(String);
-    if (frame.docs) docs = frame.docs;
+    if (frame.active) { active = expandRanges(frame.active).map(String); activeComplete = frame.active.complete; }
+    if (frame.docs) { docs = frame.docs; clipped = frame.clipped ?? {}; }
     revision++;
   }
   function detach() {
@@ -155,9 +168,9 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
   }
   async function attach() {
     const opened = await node.open({ threadId });
-    const a = { handle: opened.handle, epoch: opened.epoch, watch: null };
+    const a = { handle: opened.handle, epoch: opened.epoch, watch: null, verified: false };
     attachment = a;
-    observe(opened);
+    observe(opened.frame);
     a.watch = await node.watch({ handle: a.handle }, (frame) => {
       if (attachment !== a) return;
       observe(frame);
@@ -165,16 +178,37 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
       onChange?.();
     }, () => { if (attachment === a) { attachment = null; if (status === 'ready') status = 'stale'; onChange?.(); } });
   }
-  async function scan(query) {
+  /** An oversized item, reassembled from raw chunks and checked against its digest; a stub past maxEntryBytes. */
+  async function fetchRaw(item) {
+    if (item.bytes > maxEntryBytes) return { id: item.id, conversationId: item.conversationId, kind: item.kind, oversized: { bytes: item.bytes, sha256: item.sha256 } };
+    const parts = [];
+    let exportId, offset = 0;
+    try {
+      for (;;) {
+        const c = await node.raw({ handle: attachment.handle, id: item.id, exportId, offset });
+        stats.rawChunks++;
+        exportId = c.exportId;
+        const part = Buffer.from(c.data, 'base64');
+        parts.push(part); offset += part.length;
+        if (c.done) break;
+      }
+    } catch (e) {
+      if (exportId) node.cancel({ handle: attachment?.handle, exportId }).catch(() => {});
+      throw e;
+    }
+    const buf = Buffer.concat(parts);
+    if (createHash('sha256').update(buf).digest('hex') !== item.sha256) throw Object.assign(new Error(`Entry ${item.id} changed during export`), { code: 'unavailable' });
+    return JSON.parse(buf.toString('utf8'));
+  }
+  async function scan({ minEntryId, maxEntryId }) {
     const out = [];
-    let cursor;
-    do {
-      const page = await node.entries({ handle: attachment.handle, limit: pageLimit, ...query, ...(cursor ? { cursor } : {}) });
+    for (let from = minEntryId; ;) {
+      const page = await node.entries({ handle: attachment.handle, order: 'ascending', limit: pageLimit, maxEntryId, ...(from === undefined ? {} : { minEntryId: from }) });
       stats.received += page.items.length;
-      out.push(...page.items);
-      cursor = page.next;
-    } while (cursor);
-    return out;
+      for (const item of page.items) out.push(item.type === 'entry' ? item.record : await fetchRaw(item));
+      if (!page.more || page.last === null) return out;
+      from = page.last + 1;
+    }
   }
   function absorb(records) {
     const added = [];
@@ -182,34 +216,37 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
       if (lastId !== null && r.id <= lastId) continue;
       const parent = items.length ? items.at(-1).entry.id : null;
       const item = durableItem(r, { host, threadId, parent, extractors });
+      if (r.oversized) item.source.oversized = r.oversized;
       stats.normalized++;
-      items.push(item); byId.set(item.entry.id, item); lastId = r.id; added.push(item.entry);
+      items.push(item); byId.set(item.entry.id, item); lastId = r.id; boundary = digest(r); added.push(item.entry);
     }
     return added;
   }
 
   async function read() {
     if (closed) throw new Error('Reader is closed');
-    let reset = false;
+    let reason = pendingReset;
+    pendingReset = null;
+    const drop = (why) => { reinit(); reason ??= why; stats.resets++; };
     const added = [];
     try {
       if (!attachment) await attach();
-      if (lineage !== undefined && !sameLineage(conversation)) { reinit(); reset = true; stats.resets++; }
+      if (lineage !== undefined && lineage !== lineageOf(conversation)) drop('lineage');
       for (let round = 0; ; round++) {
         const seen = revision;
-        const newest = await node.entries({ handle: attachment.handle, order: 'descending', limit: 1 });
-        const fence = newest.items[0]?.id ?? null;
-        if (fence !== null && fence !== lastId) {
-          if (lastId !== null && fence < lastId) { reinit(); reset = true; stats.resets++; }
-          const records = await scan({ order: 'ascending', maxEntryId: fence, ...(lastId === null ? {} : { minEntryId: lastId }) });
-          if (lastId !== null && records[0]?.id !== lastId) {
-            // The boundary entry is gone: the held prefix cannot be verified against this history.
-            reinit(); reset = true; stats.resets++;
-            records.splice(0, records.length, ...await scan({ order: 'ascending', maxEntryId: fence }));
+        const { upper } = await node.fence({ handle: attachment.handle });
+        if (lastId !== null && (upper === null || upper < lastId)) drop('shorter');
+        if (upper !== null && (upper !== lastId || !attachment.verified)) {
+          let records = await scan({ maxEntryId: upper, ...(lastId === null ? {} : { minEntryId: lastId }) });
+          if (lastId !== null && (records[0]?.id !== lastId || digest(records[0]) !== boundary)) {
+            // The held prefix does not end in this history's entry: never join it.
+            drop('divergent');
+            records = await scan({ maxEntryId: upper });
           }
+          attachment.verified = true;
           added.push(...absorb(records));
-        } else if (fence === null && lastId !== null) { reinit(); reset = true; stats.resets++; }
-        lineage ??= JSON.stringify({ parent: conversation?.parent ?? null, owner: conversation?.owner ?? null });
+        }
+        lineage ??= lineageOf(conversation);
         stats.scans++;
         scanned = seen;
         if (revision === seen || round + 1 >= MAX_ROUNDS) break;
@@ -221,7 +258,8 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
       status = codeOf(e) === 'not_found' ? 'not_found' : 'unavailable';
       error = { code: codeOf(e), message: e?.message ?? String(e) };
     }
-    return { reset, added: reset ? items.map((i) => i.entry) : added, status, ...(error ? { error } : {}) };
+    const reset = reason !== null;
+    return { reset, ...(reset ? { resetReason: reason } : {}), added: reset ? items.map((i) => i.entry) : added, status, ...(error ? { error } : {}) };
   }
 
   let queue = Promise.resolve();
@@ -239,6 +277,15 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
     info() {
       return { version: lastId === null ? null : `${READER_VERSION}:${HARNESS}:${host}:${threadId}:${lastId}`,
         count: items.length, branch: 'complete', status, lastId, epoch: attachment?.epoch ?? null, stats: { ...stats } };
+    },
+    /**
+     * The held history as a persistable checkpoint. A reader opened with it as `restore` trusts it only
+     * after the node's history still ends a prefix at `lastId` with the same boundary bytes.
+     */
+    snapshot() {
+      if (lastId === null) return null;
+      return { format: SNAPSHOT_FORMAT, reader: READER_VERSION, host, threadId, lineage, lastId, boundary,
+        items: JSON.parse(JSON.stringify(items)) };
     },
     /** SESSION record (src/record.mjs). Role is a provisional inference (K5.I4). */
     session() {
@@ -261,8 +308,11 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
     },
     /** History TranscriptEntries, oldest first. */
     entries() { return items.map((i) => i.entry); },
-    /** Entry IDs of the model's active context at the last watch frame. */
+    /** Entry IDs of the model's active context at the last watch frame; `complete` is false when the node cut its ranges. */
     activeContext() { return [...active]; },
+    activeComplete() { return activeComplete; },
+    /** Watch documents as the node bounded them, and what it cut from each. */
+    docs() { return { docs, clipped }; },
     page({ before, limit = MAX_LIMIT } = {}) {
       if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT) throw new Error(`Page limit must be 1..${MAX_LIMIT}`);
       const end = before == null ? items.length : position(before);
