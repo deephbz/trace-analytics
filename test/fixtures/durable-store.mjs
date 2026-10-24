@@ -8,10 +8,18 @@ import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context';
 import { Type } from '@earendil-works/pi-ai';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import { AssistantEntry, createRegistry, defineExtension, defineTool, Harness } from '@earendil-works/pi-durable';
+import { AssistantEntry, createRegistry, defineExtension, defineTask, defineTool, Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 
 const MODEL = { provider: 'fixture-sim', modelId: 'sim-1' };
+// A lead's Task that owns a Worker conversation; it holds until buildTeam releases it.
+const releases = new Map();
+const Anchor = defineTask({ name: 'fixture.anchor', version: 1, initial: () => ({ phase: 'hold' }),
+  phases: { hold: async (task, runtime, ctx) => {
+    await new Promise((resolve) => releases.set(String(task.id), resolve));
+    await runtime.commit(() => ({ status: 'terminal', outcome: { status: 'completed', result: null } }), ctx);
+  } },
+  abort: (_task, runtime, ctx) => runtime.commit(() => ({ status: 'terminal', outcome: { status: 'aborted' } }), ctx) });
 
 function respond({ messages, systemPrompt }) {
   if (/summar/i.test(systemPrompt ?? '') || /summar/i.test(JSON.stringify(messages.at(-1)?.content ?? '')))
@@ -35,7 +43,7 @@ export async function openFixtureStore(path) {
   const echo = defineTool({ name: 'echo', description: 'Echo a word', parameters: Type.Object({ say: Type.String() }), replay: 'safe',
     execute: async (args) => ({ output: [{ type: 'text', text: `echo: ${args.say}` }] }) });
   const registry = createRegistry();
-  registry.install(defineExtension({ name: 'fixture', tools: [echo] }));
+  registry.install(defineExtension({ name: 'fixture', tools: [echo], tasks: [Anchor] }));
   const harness = await Harness.open(await openNodeSqliteStorage(path), { models, registry, settings: { compaction: { keepRecentTokens: 1 } } }, context);
   const root = await harness.root(context, { agent: { model: MODEL } });
   return { harness, root };
@@ -65,4 +73,15 @@ export async function buildFixture(harness, root) {
   const fork = await root.fork(cutoff, { ownership: { kind: 'ownerless' } }, context);
   await ask(fork, 'fork question');
   return { fork, cutoff, answer: (id) => root.commit((tx) => tx.entry(AssistantEntry, id), context) };
+}
+
+/** A Team: `lead` creates a Task that owns a new Worker conversation, which answers one input. Returns the Worker. */
+export async function buildTeam(harness, lead) {
+  const anchor = await lead.commit((tx) => tx.createTask(Anchor, null, { ownership: { kind: 'conversation' }, background: true }), context);
+  const worker = await harness.createConversation({ ownership: { kind: 'task', taskId: anchor }, agent: { model: MODEL } }, context);
+  await ask(worker, 'worker task: report the build');
+  while (!releases.has(String(anchor))) await new Promise((r) => setTimeout(r, 5));
+  releases.get(String(anchor))(); releases.delete(String(anchor));
+  await harness.waitForTask(anchor, context);
+  return worker;
 }
