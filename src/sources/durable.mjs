@@ -187,6 +187,25 @@ const digest = (record) => createHash('sha256').update(JSON.stringify(record)).d
 export const SNAPSHOT_FORMAT = 'durable-reader/1';
 
 /**
+ * The `write` for exportDurableRecords over an HTTP response: it waits for `drain` when the response
+ * buffers, and throws once the client has closed. A response that closed before the write never emits
+ * `close` again, so the write checks `destroyed` before and after it starts waiting.
+ */
+export function responseWriter(res) {
+  const gone = () => new Error('The client closed the raw export');
+  return (chunk) => {
+    if (res.destroyed) throw gone();
+    if (res.write(chunk)) return undefined;
+    return new Promise((resolve, reject) => {
+      const done = (error) => { res.off('drain', done); res.off('close', closed); error ? reject(error) : resolve(); };
+      const closed = () => done(gone());
+      res.once('drain', done); res.once('close', closed);
+      if (res.destroyed) closed();
+    });
+  };
+}
+
+/**
  * Stream one durable conversation's raw records, in history order, as JSONL to `write`, without
  * holding the history: one wire page at a time, and an oversized body chunk by chunk with its digest
  * checked after the last chunk. A record past `maxEntryBytes` is written as its stub. `start({version})`

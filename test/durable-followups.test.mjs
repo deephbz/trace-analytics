@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { durableItem, exportDurableRecords, piShaped, sessionHeadOf } from '../src/sources/durable.mjs';
+import { EventEmitter } from 'node:events';
+import { durableItem, exportDurableRecords, piShaped, responseWriter, sessionHeadOf } from '../src/sources/durable.mjs';
 import { openDurableCopy, writeDurableCopy } from '../src/sources/durable-copy.mjs';
 import { piSpendOfTotal, durableSpend, spendLabel } from '../src/sources/spend.mjs';
 
@@ -90,4 +91,20 @@ test('exportDurableRecords throws when a raw body does not match its digest, and
   node.raw = async (args) => { const c = await raw(args); return { ...c, data: Buffer.from(Buffer.from(c.data, 'base64').toString().replace('x', 'y')).toString('base64') }; };
   await assert.rejects(exportDurableRecords({ node, threadId, host: HOST, write: () => {} }), { code: 'unavailable', message: /changed during export/ });
   assert.equal(node.calls.at(-1), 'close');
+});
+
+test('responseWriter: waits for drain, and rejects when the client closed before or during the wait', async () => {
+  const response = (accepts) => Object.assign(new EventEmitter(), { destroyed: false, write: () => accepts });
+  const fast = response(true);
+  assert.equal(responseWriter(fast)(Buffer.from('a')), undefined, 'no wait while the response accepts bytes');
+  const slow = response(false), waiting = responseWriter(slow)(Buffer.from('a'));
+  slow.emit('drain');
+  await waiting;
+  assert.equal(slow.listenerCount('close'), 0, 'the wait removes its listeners');
+  const gone = response(false);
+  gone.destroyed = true;
+  assert.throws(() => responseWriter(gone)(Buffer.from('a')), /client closed/, 'a response closed before the write never waits');
+  const closing = response(false), pending = responseWriter(closing)(Buffer.from('a'));
+  closing.destroyed = true; closing.emit('close');
+  await assert.rejects(pending, /client closed/);
 });
