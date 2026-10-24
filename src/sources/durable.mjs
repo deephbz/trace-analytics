@@ -65,6 +65,8 @@ export function durableItem(record, { host, threadId, parent = null, extractors 
     originRef: entryRef(host, sessionIdOf(`${storeId}.${record.conversationId}`), id) };
   for (const key of ['head', 'edits', 'byTaskId']) if (record[key] !== undefined) source[key] = record[key];
   const semantics = {};
+  // A stub for an entry past the reader's maxEntryBytes: the body stays on the node.
+  if (record.oversized) e.oversized = { bytes: record.oversized.bytes, sha256: record.oversized.sha256, kind: record.kind };
   switch (record.kind) {
     case 'pi.user': {
       e.role = 'user'; e.blocks = blocksOf(m.content);
@@ -93,6 +95,7 @@ export function durableItem(record, { host, threadId, parent = null, extractors 
       break;
     }
     case 'pi.reset': {
+      e.kind = 'reset';
       if (messages.length) { e.role = 'user'; e.text = messagesText(messages); }
       semantics.contextBoundary = { type: 'reset', head: id, handoff: messages.length ? e.text : null };
       break;
@@ -130,6 +133,7 @@ export function piShaped(record) {
   const messages = Array.isArray(record.model) ? record.model : [];
   const m = messages[0] ?? {};
   const timestamp = iso(m.timestamp);
+  if (record.oversized) return { type: 'durable', id, kind: record.kind, timestamp, oversized: record.oversized };
   switch (record.kind) {
     case 'pi.user': case 'pi.assistant': case 'pi.tool-result':
       return { type: 'message', id, parentId: null, timestamp, message: m };
@@ -173,10 +177,65 @@ export function durableSessionRecord({ host, threadId, fold, conversation, docs 
     humanTurns: fold.humanTurns, resume: null, title: null, firstAsk: fold.firstAsk, lastAsk: fold.lastAsk, lastReply: fold.lastReply };
 }
 
+/** A digest of the conversation and docs fields durableSessionRecord reads; a change re-derives the Session. */
+export const sessionHeadOf = ({ conversation, docs = {} }) =>
+  createHash('sha256').update(JSON.stringify([conversation ?? null, docs?.['pi.agent']?.cwd ?? null])).digest('hex').slice(0, 16);
+
 /** Error from the node or the transport. `code` follows the node protocol. */
 const codeOf = (error) => error?.code ?? 'unavailable';
 const digest = (record) => createHash('sha256').update(JSON.stringify(record)).digest('hex');
 export const SNAPSHOT_FORMAT = 'durable-reader/1';
+
+/**
+ * Stream one durable conversation's raw records, in history order, as JSONL to `write`, without
+ * holding the history: one wire page at a time, and an oversized body chunk by chunk with its digest
+ * checked after the last chunk. A record past `maxEntryBytes` is written as its stub. `start({version})`
+ * runs once before the first byte. `write(chunk)` may return a promise, for backpressure. A failure
+ * after `start` throws: the caller must end the output as failed, never as complete.
+ */
+export async function exportDurableRecords({ node, threadId, host, write, start, pageLimit = 100, maxEntryBytes = 64 << 20 } = {}) {
+  host = checkHost(host);
+  parseThread(threadId);
+  const { handle } = await node.open({ threadId });
+  let exportId;
+  try {
+    const { upper } = await node.fence({ handle });
+    const version = upper === null ? null : `${READER_VERSION}:${HARNESS}:${host}:${threadId}:${upper}`;
+    await start?.({ version });
+    let count = 0, bytes = 0;
+    const line = async (chunk) => { bytes += chunk.length; await write(chunk); };
+    for (let from; upper !== null;) {
+      const page = await node.entries({ handle, order: 'ascending', limit: pageLimit, maxEntryId: upper, ...(from === undefined ? {} : { minEntryId: from }) });
+      for (const item of page.items) {
+        count++;
+        if (item.type === 'entry') { await line(Buffer.from(`${JSON.stringify(item.record)}\n`)); continue; }
+        if (item.bytes > maxEntryBytes) {
+          await line(Buffer.from(`${JSON.stringify({ id: item.id, conversationId: item.conversationId, kind: item.kind, oversized: { bytes: item.bytes, sha256: item.sha256 } })}\n`));
+          continue;
+        }
+        const hash = createHash('sha256');
+        exportId = undefined;
+        for (let offset = 0; ;) {
+          const c = await node.raw({ handle, id: item.id, exportId, offset });
+          exportId = c.exportId;
+          const part = Buffer.from(c.data, 'base64');
+          hash.update(part); offset += part.length;
+          await line(part);
+          if (c.done) break;
+        }
+        exportId = undefined;
+        if (hash.digest('hex') !== item.sha256) throw Object.assign(new Error(`Entry ${item.id} changed during export`), { code: 'unavailable' });
+        await line(Buffer.from('\n'));
+      }
+      if (!page.more || page.last === null) break;
+      from = page.last + 1;
+    }
+    return { version, count, bytes };
+  } finally {
+    if (exportId) await node.cancel({ handle, exportId }).catch(() => {});
+    await node.close({ handle }).catch(() => {});
+  }
+}
 
 /**
  * Open one durable conversation for incremental reading through `node`, one connection of the

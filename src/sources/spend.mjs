@@ -40,6 +40,9 @@ export function piSpend(entries) {
   return { rule: SPEND_RULE, usd, tokens, covers: [...PI_COVERS] };
 }
 
+/** Spend of one Pi Session from a cost total already summed over its assistant entries (piSpend's rule). */
+export const piSpendOfTotal = (usd) => ({ rule: SPEND_RULE, usd: num(usd), tokens: null, covers: [...PI_COVERS] });
+
 /** A Team's spend: the members' sum, covering only the classes every member covers. */
 export function teamSpend(members) {
   const covers = CLASSES.filter((c) => members.every((m) => m.covers.includes(c)));
@@ -49,9 +52,12 @@ export function teamSpend(members) {
   return { rule: SPEND_RULE, usd, tokens, covers, ...(mixed ? { mixed: true } : {}) };
 }
 
+// The amount reads as AmPi's money() (web/src/util.ts), so a label that leaves nothing out equals it.
+const money = (usd) => usd === 0 ? '$0' : usd < 0.01 ? '<$0.01' : `$${usd.toFixed(2)}`;
+
 /** The label a view shows beside a figure: the amount, and what it leaves out when it is not complete. */
 export function spendLabel(spend) {
-  const amount = spend.usd === null ? 'no price reported' : `$${spend.usd.toFixed(2)}`;
+  const amount = spend.usd === null ? 'no price reported' : money(spend.usd);
   const missing = CLASSES.filter((c) => !spend.covers.includes(c));
   if (!missing.length) return amount;
   return `${amount} (${spend.mixed ? 'some members exclude' : 'excludes'} ${missing.join(', ')})`;

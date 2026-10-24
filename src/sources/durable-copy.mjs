@@ -9,14 +9,14 @@
 //   <file>           JSONL, one raw EntryRecord (or oversized stub) per line, history order
 //   <file>.idx       JSONL, one [id, offset, length] per record line
 //   <file>.meta.json format, Host, thread, generation, committed byte and line counts, the
-//                    reader checkpoint, conversation, docs and the running session fold
+//                    reader checkpoint, conversation, docs, the Session head and the running session fold
 // The meta file commits a write: readers see only the committed prefix, and the next write
 // truncates any uncommitted tail first. A reset rewrites the copy under a new generation.
 // A reader holds the offset index and the fold, never the whole history.
 import { randomBytes } from 'node:crypto';
 import { closeSync, existsSync, ftruncateSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { READER_VERSION } from '../record.mjs';
-import { durableItem, durableSessionRecord, emptySessionFold, foldSession, HARNESS, parseThread, piShaped } from './durable.mjs';
+import { durableItem, durableSessionRecord, emptySessionFold, foldSession, HARNESS, parseThread, piShaped, sessionHeadOf } from './durable.mjs';
 import { checkHost } from './session-state.mjs';
 
 export const COPY_FORMAT = 'durable-copy/1';
@@ -76,8 +76,9 @@ export function writeDurableCopy(file, { host, threadId, reset, records, checkpo
       foldSession(meta.fold, item, conversationId);
       parent = item.entry.id;
     }
+    conversation = conversation ?? meta.conversation ?? null;
     meta = { ...meta, bytes: at, idxBytes: idxAt, lines: meta.lines + records.length, checkpoint: checkpoint ?? null,
-      conversation: conversation ?? meta.conversation ?? null, docs };
+      conversation, docs, head: sessionHeadOf({ conversation, docs }) };
   } finally { closeSync(fd); closeSync(ifd); }
   writeMeta(file, meta);
   return meta;
@@ -113,7 +114,8 @@ export function openDurableCopy(file, { host } = {}) {
       return buffer;
     } finally { closeSync(fd); }
   }
-  const version = () => meta ? `${READER_VERSION}:${HARNESS}:${host}:${meta.threadId}:${meta.generation}:${meta.fold.lastId ?? ''}` : null;
+  // The last segment names the history tip and the Session head, so a cwd change without a new entry re-derives.
+  const version = () => meta ? `${READER_VERSION}:${HARNESS}:${host}:${meta.threadId}:${meta.generation}:${meta.fold.lastId ?? ''}.${meta.head ?? ''}` : null;
   const itemOf = (record, parent) => durableItem(record, { host, threadId: meta.threadId, parent });
   function info() {
     assertOpen();

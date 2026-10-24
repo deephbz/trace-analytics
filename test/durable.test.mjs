@@ -94,7 +94,7 @@ test('real store: every mapping row, citations, and predecessor links', real, as
   assert.ok(r.entry(boundary.head), 'the kept head is an entry in history');
 
   const [reset] = byKind(r, 'pi.reset');
-  assert.equal(reset.kind, 'other');
+  assert.equal(reset.kind, 'reset', 'a reset entry, as Pi derives it');
   assert.equal(reset.text, 'We were testing the reader. Continue.');
   assert.deepEqual(r.item(reset.id).semantics.contextBoundary, { type: 'reset', head: reset.id, handoff: reset.text });
 
