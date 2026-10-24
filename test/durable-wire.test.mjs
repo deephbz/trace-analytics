@@ -181,6 +181,56 @@ test('oversized: cancel releases the export; a later chunk answers cancelled', r
   assert.equal(node.service.stats().handles, 0);
 });
 
+test('oversized: a page buffers no bytes; each handle holds at most one export, released by done, replace, cancel and close', async () => {
+  // A synthetic conversation of large records; the service sees only the public Conversation calls.
+  const records = [1, 2, 3].map((id) => ({ id, conversationId: 1, kind: 'fixture.note', data: { note: String(id).repeat((600 << 10) + id) } }));
+  const size = (r) => Buffer.byteLength(JSON.stringify(r), 'utf8');
+  const conversation = {
+    watch: async () => ({ value: { conversation: { id: 1 }, entries: records.map(({ id }) => ({ id })), docs: {} }, start() {}, stop: async () => {} }),
+    entries: async ({ order, minEntryId = 0, maxEntryId = Infinity }, limit, cursor = 0) => {
+      const all = records.filter((r) => r.id >= minEntryId && r.id <= maxEntryId);
+      if (order === 'descending') all.reverse();
+      const items = all.slice(cursor, cursor + limit);
+      return { items, ...(cursor + limit < all.length ? { next: cursor + limit } : {}) };
+    },
+  };
+  const service = createReaderService({ resolve: async () => conversation });
+  const a = service.connect(), b = service.connect();
+  const ha = (await a.open({ threadId: 's.1' })).handle, hb = (await b.open({ threadId: 's.1' })).handle;
+  const buffered = () => service.stats().buffered;
+
+  const page = await a.entries({ handle: ha, limit: 400 });
+  assert.deepEqual(page.items.map((i) => i.type), ['oversized', 'oversized', 'oversized']);
+  assert.deepEqual(page.items.map((i) => i.bytes), records.map(size));
+  assert.equal(buffered(), 0, 'a returned page holds no record bytes');
+
+  // Every chunk of every record, on both connections: the service never holds more than one record per handle.
+  let peak = 0;
+  for (const r of records) for (const [c, handle] of [[a, ha], [b, hb]]) {
+    const first = await c.raw({ handle, id: r.id, offset: 0 });
+    assert.equal(first.sha256, page.items[r.id - 1].sha256, 'the page digest hashes the same UTF-8 bytes');
+    peak = Math.max(peak, buffered());
+  }
+  assert.equal(service.stats().exports, 2, 'a new export replaced each handle\'s previous one');
+  assert.equal(buffered(), 2 * size(records[2]));
+  assert.ok(peak <= 2 * Math.max(...records.map(size)), `peak ${peak} B: one record per handle`);
+  assert.equal(service.stats().maxBuffered, peak);
+
+  // Done, cancel and close each release the bytes.
+  let x, offset = 0;
+  do { x = await a.raw({ handle: ha, id: 3, offset, ...(x ? { exportId: x.exportId } : {}) }); offset += Buffer.byteLength(x.data, 'base64'); } while (!x.done);
+  assert.equal(buffered(), size(records[2]), 'a completed export releases its bytes');
+  const held = await b.raw({ handle: hb, id: 1, offset: 0 });
+  await b.cancel({ handle: hb, exportId: held.exportId });
+  assert.equal(buffered(), 0, 'cancel releases the bytes');
+  await b.raw({ handle: hb, id: 2, offset: 0 });
+  await b.close({ handle: hb });
+  assert.equal(buffered(), 0, 'close releases the bytes');
+  await a.raw({ handle: ha, id: 1, offset: 0 });
+  await a.disconnect();
+  assert.deepEqual([buffered(), service.stats().exports, service.stats().handles], [0, 0, 0], 'disconnect releases the bytes');
+});
+
 // (d) Handles are bound to their connection.
 
 test('handles: another connection cannot use a handle; disconnect closes every handle and its watch', real, async (t) => {

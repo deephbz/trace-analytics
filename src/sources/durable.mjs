@@ -352,7 +352,9 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
   /** An oversized item, reassembled from raw chunks and checked against its digest; a stub past maxEntryBytes. */
   async function fetchRaw(handle, item) {
     if (item.bytes > maxEntryBytes) return { id: item.id, conversationId: item.conversationId, kind: item.kind, oversized: { bytes: item.bytes, sha256: item.sha256 } };
-    const parts = [];
+    const changed = () => Object.assign(new Error(`Entry ${item.id} changed during export`), { code: 'unavailable' });
+    // Chunks decode straight into one buffer of the announced size: the body is held once, not as parts plus their join.
+    const buf = Buffer.allocUnsafe(item.bytes);
     let exportId, offset = 0;
     try {
       for (;;) {
@@ -360,8 +362,9 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
         live();
         stats.rawChunks++;
         exportId = c.exportId;
-        const part = Buffer.from(c.data, 'base64');
-        parts.push(part); offset += part.length;
+        const end = offset + Buffer.byteLength(c.data, 'base64');
+        if (end > buf.length || buf.write(c.data, offset, 'base64') !== end - offset) throw changed();
+        offset = end;
         if (c.done) break;
       }
     } catch (e) {
@@ -369,8 +372,7 @@ export function openDurableSession({ node, threadId, host, pageLimit = 100, extr
       if (exportId && !closed) node.cancel({ handle, exportId }).catch(() => {});
       throw e;
     }
-    const buf = Buffer.concat(parts);
-    if (createHash('sha256').update(buf).digest('hex') !== item.sha256) throw Object.assign(new Error(`Entry ${item.id} changed during export`), { code: 'unavailable' });
+    if (offset !== buf.length || createHash('sha256').update(buf).digest('hex') !== item.sha256) throw changed();
     return JSON.parse(buf.toString('utf8'));
   }
   /**

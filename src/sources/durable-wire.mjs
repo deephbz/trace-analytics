@@ -46,7 +46,8 @@ export class ReaderError extends Error {
   constructor(code, message) { super(message); this.code = code; }
 }
 const fail = (code, message) => { throw new ReaderError(code, message); };
-const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
+/** Digest of a Buffer, or of a string's UTF-8 bytes without a Buffer copy of them. */
+const sha256 = (data) => createHash('sha256').update(data, 'utf8').digest('hex');
 const isId = (x) => Number.isSafeInteger(x) && x >= 0;
 
 /** Encode one record once; size and digest come from the same bytes. */
@@ -134,7 +135,8 @@ export function watchFrame(view, { epoch, watchRevision, limits = LIMITS }) {
 export function createReaderService({ resolve, context, epoch = 1, limits = LIMITS } = {}) {
   if (typeof resolve !== 'function') throw new TypeError('resolve is required');
   const handles = new Map(); // handle → { connection, conversation, watch, revision, listeners, export }
-  const stats = { opened: 0, closed: 0, exports: 0, maxRecordBytes: 0 };
+  // `buffered` counts the export bytes held now (at most one record per handle); a page holds none after it returns.
+  const stats = { opened: 0, closed: 0, exports: 0, maxRecordBytes: 0, buffered: 0, maxBuffered: 0 };
   let nextHandle = 1;
 
   function own(connection, handle) {
@@ -142,12 +144,17 @@ export function createReaderService({ resolve, context, epoch = 1, limits = LIMI
     if (!h || h.connection !== connection) fail('expired_handle', 'The handle is unknown or belongs to another connection');
     return h;
   }
+  /** Replace or clear a handle's one export; every export change goes through here. */
+  function setExport(h, x) {
+    if (h.export) { stats.exports--; stats.buffered -= h.export.buf.length; }
+    h.export = x;
+    if (x) { stats.exports++; stats.buffered += x.buf.length; stats.maxBuffered = Math.max(stats.maxBuffered, stats.buffered); }
+  }
   async function release(handle) {
     const h = handles.get(handle);
     if (!h) return;
     handles.delete(handle);
-    if (h.export) stats.exports--;
-    h.export = null;
+    setExport(h, null);
     stats.closed++;
     try { await h.watch.stop(); } catch {}
     for (const end of h.listeners) try { end('closed'); } catch {}
@@ -163,12 +170,12 @@ export function createReaderService({ resolve, context, epoch = 1, limits = LIMI
       sub = Math.min(sub, limit - items.length);
       const got = await h.conversation.entries({ order, minEntryId, maxEntryId }, sub, cursor, context);
       for (const record of got.items) {
-        // One JSON string per record measures it; only an oversized record also becomes bytes, for its digest.
+        // One JSON string per record measures it, and an oversized record's digest hashes the same string.
         const json = JSON.stringify(record);
         const size = Buffer.byteLength(json, 'utf8');
         stats.maxRecordBytes = Math.max(stats.maxRecordBytes, size);
         const item = size > limits.entryBytes
-          ? { type: 'oversized', id: record.id, conversationId: record.conversationId, kind: record.kind, bytes: size, sha256: sha256(Buffer.from(json, 'utf8')) }
+          ? { type: 'oversized', id: record.id, conversationId: record.conversationId, kind: record.kind, bytes: size, sha256: sha256(json) }
           : { type: 'entry', record };
         const itemBytes = item.type === 'entry' ? size : 256;
         if (items.length && bytes + itemBytes > limits.pageBytes) { more = true; break fill; }
@@ -232,20 +239,20 @@ export function createReaderService({ resolve, context, epoch = 1, limits = LIMI
           if (!record) fail('not_found', `Entry ${id} is not in this history`);
           const { buf, bytes } = encode(record);
           if (bytes > limits.exportBytes) fail('too_large', `Entry ${id} is ${bytes} bytes`);
-          if (!h.export) stats.exports++;
-          x = h.export = { exportId: randomUUID(), id, buf, sha256: sha256(buf) }; // one export per handle
+          // A new export replaces the handle's previous one, so a handle holds at most one record's bytes.
+          setExport(h, x = { exportId: randomUUID(), id, buf, sha256: sha256(buf) });
         } else if (!x || x.exportId !== exportId || x.id !== id) fail('cancelled', 'The export was cancelled or replaced');
         if (offset > x.buf.length) fail('bad_request', 'offset is past the end');
         const end = Math.min(offset + limits.chunkBytes, x.buf.length);
         const out = { exportId: x.exportId, offset, encoding: 'base64', data: x.buf.subarray(offset, end).toString('base64'),
           bytes: x.buf.length, sha256: x.sha256, done: end === x.buf.length };
-        if (out.done) { h.export = null; stats.exports--; }
+        if (out.done) setExport(h, null);
         return out;
       },
       /** cancel({handle, exportId}): release an export; a later raw for it answers `cancelled`. */
       async cancel({ handle, exportId }) {
         const h = own(connection, handle);
-        if (h.export?.exportId === exportId) { h.export = null; stats.exports--; }
+        if (h.export?.exportId === exportId) setExport(h, null);
         return {};
       },
       /** watch({handle}, onFrame, onEnd) → { stop() }. Frames are bounded; onEnd(reason) is final. */
