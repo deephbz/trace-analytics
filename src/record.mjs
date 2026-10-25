@@ -94,7 +94,8 @@
 // ENTRY: session is the SESSION id; id and parent identify source entries.
 //   host as for SESSION; ref: <host>/<session>#<id>, e.g. local/pi:abc#e1.
 //   t: epoch ms or null; kind: human | injected | assistant | tool | compaction |
-//   branch-summary | other; name: tool name or null. Only with text opt-in: text.
+//   branch-summary | reset (durable context reset) | other; name: tool name or null.
+//   Only with text opt-in: text.
 //   Pi and Claude walk from the last appended entry to the root without a depth cap.
 //   Claude compact_boundary uses logicalParentUuid when parentUuid is null.
 //   Codex uses file order; unlabelled entries use line:<ordinal> ids.
@@ -105,6 +106,7 @@
 //   {type:"toolCall",id,name,args} | {type:"image",mimeType} (no image bytes) on non-tool
 //   messages; result {callId, isError, text: text parts joined by newline} on tool results;
 //   customType and text on custom / custom_message; summary on compaction / branch summary.
+//   Durable only: oversized {bytes, sha256, kind} on a stub whose body stays on the node.
 //   refresh() -> {reset, added}: reset means added is the whole active branch (first read,
 //   shrunk or replaced file, or the tip moved to another branch); otherwise added is the
 //   appended entries that extend the active branch.

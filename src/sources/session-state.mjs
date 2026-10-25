@@ -101,6 +101,22 @@ export function checkHost(host = process.env.TRACE_ANALYTICS_HOST || 'local') {
 }
 export const sessionRef = (host, session) => `${host}/${session}`;
 export const entryRef = (host, session, entry) => `${host}/${session}#${entry}`;
+/** Split `<host>/<harness>:<session>[#<entry>]`. A bare thread or session ID is not a ref. */
+export function parseRef(ref) {
+  const m = typeof ref === 'string' ? /^([^\s/#]+)\/([a-z][a-z-]*):([^\s/#]+)(?:#([^\s/#]+))?$/.exec(ref) : null;
+  if (!m) throw new Error(`Not a Session ref: ${JSON.stringify(ref)}`);
+  return { host: m[1], harness: m[2], session: m[3], entry: m[4] ?? null };
+}
+/**
+ * The hub link that serves a ref: one Host can carry a Pi source and a durable source, so a
+ * route is host plus source (`<host>#pi`, `<host>#durable`), never a thread ID alone.
+ */
+export function linkKey(ref) {
+  const { host, harness } = parseRef(ref);
+  const source = harness === 'pi-durable' ? 'durable' : harness === 'pi' ? 'pi' : null;
+  if (!source) throw new Error(`No AmPi source serves harness ${harness}`);
+  return `${host}#${source}`;
+}
 export const isScratch = (cwd) => cwd == null ? null : /^\/(?:private\/)?(?:tmp(?:\/|$)|var\/folders(?:\/|$))/.test(cwd);
 
 /**

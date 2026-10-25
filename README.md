@@ -56,6 +56,11 @@ A disk-backed range-reader prototype lives beside it in
 Its contract and isolated memory/cold-open check are in
 [the range-reader note](docs/transcript-range.md). It does not change the
 existing full-reader API.
+A durable source, `openDurableSession({ node, threadId, host })` in
+[`src/sources/durable.mjs`](src/sources/durable.mjs), reads one pi-durable
+conversation through an injected node client and never opens a store. It is an
+exploration prototype with an in-memory index. Its real-store tests need
+pi-durable 1.4.0 installed and are skipped otherwise.
 `--since` and `--until` accept absolute dates or nonnegative integer spans:
 `Nm`, `Nh`, `Nd`, `Nw`. A span subtracts minutes, hours, days, or weeks from
 one shared current-time anchor. For example, `sessions --since 7d` selects
