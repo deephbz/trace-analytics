@@ -176,3 +176,24 @@ test('piShaped: Pi-native shapes for published readers; no guessed Pi analog', (
   assert.equal(piShaped({ id: 7, kind: 'x.note', data: { a: 1 } }).type, 'custom');
   assert.equal(piShaped({ id: 8, kind: 'x.mention', model: [{ role: 'user', content: 'yo', timestamp: 0 }] }).content, 'yo');
 });
+
+test('copy: item(id) reads one ReaderItem with its entry data, as the visit rows carry it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'durable-copy-item-'));
+  try {
+    const file = join(dir, 'c.jsonl'), threadId = 'tree-a.1';
+    const data = { source: 'team', deliveryId: 'k1', epoch: 'e1', delivery: 'alert', sender: 'reviewer', interrupt: true };
+    const records = [
+      { id: 1, conversationId: 1, kind: 'pi.user', model: [{ role: 'user', content: 'go', timestamp: 1001 }] },
+      { id: 2, conversationId: 1, kind: 'team.notice', data, model: [{ role: 'user', content: '{"kind":"alert"}', timestamp: 1002 }] },
+    ];
+    writeDurableCopy(file, { host: HOST, threadId, reset: true, records, checkpoint: null, conversation: { id: 1 } });
+    const copy = openDurableCopy(file, { host: HOST });
+    copy.refresh();
+    const item = copy.item(2), row = visitAll(copy)[1];
+    assert.deepEqual(item.source.data, data);
+    assert.deepEqual(item.entry, copy.entry(2));
+    assert.deepEqual({ entry: item.entry, source: item.source, semantics: item.semantics }, { entry: row.entry, source: row.source, semantics: row.semantics });
+    assert.equal(copy.item(3), undefined);
+    copy.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

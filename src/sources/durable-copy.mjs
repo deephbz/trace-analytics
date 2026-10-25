@@ -194,6 +194,15 @@ export function openDurableCopy(file, { host } = {}) {
   // The last segment names the history tip and the Session head, so a cwd change without a new entry re-derives.
   const version = () => meta ? `${READER_VERSION}:${HARNESS}:${host}:${meta.threadId}:${meta.generation}:${meta.fold.lastId ?? ''}.${meta.head ?? ''}` : null;
   const itemOf = (record, parent) => durableItem(record, { host, threadId: meta.threadId, parent });
+  function item(id, { version: wanted } = {}) {
+    assertOpen();
+    if (wanted && wanted !== version()) throw new Error('Entry reference is stale');
+    const at = loadIndex().get(String(id));
+    if (!at) return undefined;
+    const record = JSON.parse(readRange(dataFile(file, meta.generation), at.offset, at.length).toString('utf8'));
+    const parent = at.position ? index.idAt(at.position - 1) : null;
+    return itemOf(record, parent);
+  }
   function info() {
     assertOpen();
     return { version: version(), bytes: meta?.bytes ?? 0, branch: 'complete', invalidLines: 0, count: meta?.lines ?? 0, generation: meta?.generation ?? null };
@@ -252,15 +261,9 @@ export function openDurableCopy(file, { host } = {}) {
       } finally { closeSync(fd); }
     },
     /** One entry by ID, read from disk. `full` is accepted for the Pi range surface: copy entries are always whole. */
-    entry(id, { version: wanted } = {}) {
-      assertOpen();
-      if (wanted && wanted !== version()) throw new Error('Entry reference is stale');
-      const at = loadIndex().get(String(id));
-      if (!at) return undefined;
-      const record = JSON.parse(readRange(dataFile(file, meta.generation), at.offset, at.length).toString('utf8'));
-      const parent = at.position ? index.idAt(at.position - 1) : null;
-      return itemOf(record, parent).entry;
-    },
+    entry(id, options) { return item(id, options)?.entry; },
+    /** One ReaderItem by ID, read from disk: the entry with its source facts (`source.data`) and semantics, as `visit` rows carry them. */
+    item,
     /** The raw record's JSON bytes, paged like openPiSessionRange.entryBytes; `format: 'durable-json'`. */
     entryBytes(id, { offset = 0, limit = 65536 } = {}) {
       assertOpen();
