@@ -1,4 +1,5 @@
 // Checks for the input adapters and load(), on small synthetic files.
+import "./home.mjs";
 import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

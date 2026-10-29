@@ -1,4 +1,5 @@
 // Checks for the compaction study's joins, on synthetic records.
+import "./home.mjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { compactionRows, compactionTotals, pricer } from "../src/analytics/compaction.mjs";

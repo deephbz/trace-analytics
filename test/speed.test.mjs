@@ -1,4 +1,5 @@
 // Checks for the two estimates the speed report rests on.
+import "./home.mjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { decode, fitFloor, floorAt, held } from "../src/analytics/speed.mjs";

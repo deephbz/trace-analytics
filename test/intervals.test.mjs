@@ -1,3 +1,4 @@
+import "./home.mjs";
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {partition,analyzeIntervals} from '../src/analytics/intervals.mjs';

@@ -1,6 +1,7 @@
 // Systems review milestone 1, risks 3, 5, 6 and 7 (HyperCarrier apps/ampi/docs/durable/review-milestone-1-systems.md):
 // a cold refresh streams to its sink, a copy survives a kill mid-reset and refuses a partial bundle, a closed
 // reader leaves no handle, and an aborted export settles without waiting for the node.
+import "./home.mjs";
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';

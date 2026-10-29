@@ -1,5 +1,6 @@
 // Synthetic logs only. Tests target the live transcript: appends, resets, branch moves,
 // Host identity across copies, and agreement with the catalog reader.
+import "./home.mjs";
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtemp, writeFile, appendFile, copyFile, rm, mkdir, truncate, rename } from 'node:fs/promises';

@@ -1,4 +1,5 @@
 // Synthetic logs only. Tests target branch loss, disclosure, and population drift.
+import "./home.mjs";
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { execFile } from 'node:child_process';

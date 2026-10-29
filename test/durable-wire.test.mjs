@@ -1,3 +1,4 @@
+import "./home.mjs";
 import assert from 'node:assert/strict';
 import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

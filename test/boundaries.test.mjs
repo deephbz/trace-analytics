@@ -1,6 +1,7 @@
 // The layers' import rules: sources know harnesses, analytics know intentions, reports know
 // presentation. Only src/record.mjs is shared between sources and analytics, and only
 // src/pipeline.mjs (and the entry points) wire all three.
+import "./home.mjs";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
