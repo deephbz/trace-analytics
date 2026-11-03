@@ -12,7 +12,7 @@ try {
   fixture = { ...await import('./fixtures/durable-store.mjs'), ...await import('./fixtures/durable-node.mjs'),
     context: (await import('@earendil-works/chord/context')).BACKGROUND_CONTEXT };
 } catch (e) { if (e?.code !== 'ERR_MODULE_NOT_FOUND') throw e; }
-const real = fixture ? {} : { skip: 'pi-durable 1.4.0 is not installed' };
+const real = fixture ? {} : { skip: 'pi-durable 1.5.0 is not installed' };
 
 const HOST = 'demo';
 async function store(t) {

@@ -14,7 +14,7 @@ try {
   fixture = { ...await import('./fixtures/durable-store.mjs'), ...await import('./fixtures/durable-node.mjs'),
     context: (await import('@earendil-works/chord/context')).BACKGROUND_CONTEXT };
 } catch (e) { if (e?.code !== 'ERR_MODULE_NOT_FOUND') throw e; }
-const real = fixture ? {} : { skip: 'pi-durable 1.4.0 is not installed' };
+const real = fixture ? {} : { skip: 'pi-durable 1.5.0 is not installed' };
 
 const HOST = 'demo', THREAD = 'tree-a.1';
 const at = (kind, id, extra = {}) => ({ id, conversationId: 1, kind, model: [{ role: 'user', content: 'Continue.', timestamp: 1_000 + id }], ...extra });

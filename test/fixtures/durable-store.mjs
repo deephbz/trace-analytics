@@ -1,15 +1,15 @@
-// Builds a small pi-durable 1.4.0 store with pi-ai's faux provider (no network, no credentials).
+// Builds a small pi-durable 1.5.0 store with pi-ai's faux provider (no network, no credentials).
 // Only tests open it. It is a dev-only fixture: the durable source itself never imports pi-durable.
 //
 //   root:  user → assistant(tool call) → tool-result → assistant · custom input · custom write
 //          · compaction · reset · user → assistant
 //   fork:  forked at the first answer; its own user → assistant
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context';
-import { Type } from '@earendil-works/pi-ai';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { AssistantEntry, createRegistry, defineExtension, defineTask, defineTool, Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
+import { obj, str } from '@earendil-works/pi-schema';
 
 const MODEL = { provider: 'fixture-sim', modelId: 'sim-1' };
 // A lead's Task that owns a Worker conversation; it holds until buildTeam releases it.
@@ -40,7 +40,7 @@ export async function openFixtureStore(path) {
   const models = createModels();
   models.setProvider(faux.provider);
   // A rerun returns the same output, so a crash mid-call may replay it.
-  const echo = defineTool({ name: 'echo', description: 'Echo a word', parameters: Type.Object({ say: Type.String() }), replay: 'safe',
+  const echo = defineTool({ name: 'echo', description: 'Echo a word', parameters: obj({ say: str() }), replay: 'safe',
     execute: async (args) => ({ output: [{ type: 'text', text: `echo: ${args.say}` }] }) });
   const registry = createRegistry();
   registry.install(defineExtension({ name: 'fixture', tools: [echo], tasks: [Anchor] }));

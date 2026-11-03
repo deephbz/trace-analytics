@@ -6,12 +6,12 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { CLASSES, durableSpend, piSpend, SPEND_RULE, spendLabel, teamSpend } from '../src/sources/spend.mjs';
 
-// Real-store tests need pi-durable 1.4.0 (installed by the HyperCarrier checkout); see durable.test.mjs.
+// Real-store tests need the pi-durable 1.5.0 devDependencies; see durable.test.mjs.
 let fixture;
 try {
   fixture = { ...await import('./fixtures/durable-store.mjs'), context: (await import('@earendil-works/chord/context')).BACKGROUND_CONTEXT };
 } catch (e) { if (e?.code !== 'ERR_MODULE_NOT_FOUND') throw e; }
-const real = fixture ? {} : { skip: 'pi-durable 1.4.0 is not installed' };
+const real = fixture ? {} : { skip: 'pi-durable 1.5.0 is not installed' };
 
 const usage = (input, output, total) => ({ input, output, cacheRead: 0, cacheWrite: 0, totalTokens: input + output, cost: { total } });
 
@@ -55,13 +55,15 @@ test('facts: pi.usage counts the compaction request the history does not, and a 
     do { const p = await c.entries({ order: 'ascending' }, 100, cursor, fixture.context); out.push(...p.items); cursor = p.next; } while (cursor);
     return out;
   };
+  // Prompt tokens: the faux provider puts them in cacheRead and cacheWrite when a session ID is sent.
+  const prompt = (u) => u.input + u.cacheRead + u.cacheWrite;
   const inputOf = (records, conversationId) => records.filter((r) => r.kind === 'pi.assistant' && (conversationId === undefined || r.conversationId === conversationId))
-    .reduce((n, r) => n + r.model[0].usage.input, 0);
+    .reduce((n, r) => n + prompt(r.model[0].usage), 0);
 
   const rootDoc = await docOf(root);
   const rootHistory = await all(root);
   const responses = inputOf(rootHistory);
-  const doc = Object.values(rootDoc.models).reduce((n, u) => n + u.input, 0);
+  const doc = Object.values(rootDoc.models).reduce((n, u) => n + prompt(u), 0);
   assert.ok(doc > responses, `pi.usage input ${doc} > response input ${responses}: the compaction request counts`);
   assert.ok(rootHistory.some((r) => r.kind === 'pi.compaction'));
 
@@ -69,5 +71,5 @@ test('facts: pi.usage counts the compaction request the history does not, and a 
   const forkHistory = await all(fork);
   const own = inputOf(forkHistory, fork.id);
   assert.ok(inputOf(forkHistory) > own, 'the fork history shows inherited responses');
-  assert.equal(Object.values(forkDoc.models).reduce((n, u) => n + u.input, 0), own, 'the fork pi.usage holds only its own requests');
+  assert.equal(Object.values(forkDoc.models).reduce((n, u) => n + prompt(u), 0), own, 'the fork pi.usage holds only its own requests');
 });

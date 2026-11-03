@@ -6,14 +6,14 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { durableItem, openDurableSession, parseThread } from '../src/sources/durable.mjs';
 
-// Real-store tests need pi-durable 1.4.0, which the HyperCarrier checkout installs. trace-analytics
-// itself has no dependencies, so a standalone checkout skips them and says why.
+// Real-store tests need the pi-durable 1.5.0 devDependencies (`npm install`). Without them the tests are
+// skipped and say why. The durable source itself never imports pi-durable.
 let fixture;
 try {
   fixture = { ...await import('./fixtures/durable-store.mjs'), ...await import('./fixtures/durable-node.mjs'),
     context: (await import('@earendil-works/chord/context')).BACKGROUND_CONTEXT };
 } catch (e) { if (e?.code !== 'ERR_MODULE_NOT_FOUND') throw e; }
-const real = fixture ? {} : { skip: 'pi-durable 1.4.0 is not installed' };
+const real = fixture ? {} : { skip: 'pi-durable 1.5.0 is not installed' };
 
 const HOST = 'demo';
 async function store(t) {
@@ -67,7 +67,8 @@ test('real store: every mapping row, citations, and predecessor links', real, as
   assert.equal(call.model, 'sim-1');
   assert.equal(call.provider, 'fixture-sim');
   assert.deepEqual(Object.keys(call.usage), ['input', 'output', 'cacheRead', 'cacheWrite', 'cost']);
-  assert.equal(call.usage.input, 42);
+  // pi-durable sends a session ID, so the faux provider counts every prompt token as a cache read or write.
+  assert.deepEqual([call.usage.input, call.usage.cacheRead, call.usage.cacheWrite], [0, 0, 49]);
   assert.equal(answer.blocks[0].text, 'echo said hi');
 
   const [tool] = byKind(r, 'pi.tool-result');

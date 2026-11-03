@@ -10,13 +10,13 @@ import { activeRanges, boundDoc, clipString, createReaderService, expandRanges, 
 import { openDurableSession } from '../src/sources/durable.mjs';
 import { linkKey, parseRef } from '../src/sources/session-state.mjs';
 
-// Real-store tests need pi-durable 1.4.0 (installed by the HyperCarrier checkout); see durable.test.mjs.
+// Real-store tests need the pi-durable 1.5.0 devDependencies; see durable.test.mjs.
 let fixture;
 try {
   fixture = { ...await import('./fixtures/durable-store.mjs'), ...await import('./fixtures/durable-node.mjs'),
     context: (await import('@earendil-works/chord/context')).BACKGROUND_CONTEXT };
 } catch (e) { if (e?.code !== 'ERR_MODULE_NOT_FOUND') throw e; }
-const real = fixture ? {} : { skip: 'pi-durable 1.4.0 is not installed' };
+const real = fixture ? {} : { skip: 'pi-durable 1.5.0 is not installed' };
 
 const HOST = 'demo';
 setFlagsFromString('--expose-gc');
@@ -91,9 +91,7 @@ test('watch: real frames carry the active context as ranges and only allowed doc
   const node = fixture.serviceNode(harness);
   const opened = await node.open({ threadId: `tree-a.${root.id}` });
   t.after(() => node.close({ handle: opened.handle }));
-  const view = await root.watch(fixture.context);
-  const native = view.value.entries.map((e) => e.id);
-  await view.stop();
+  const native = (await root.context(fixture.context)).entries.map((e) => e.id);
   assert.deepEqual(expandRanges(opened.frame.active), native);
   assert.deepEqual(Object.keys(opened.frame.docs).sort(), ['pi.agent', 'pi.inbox', 'pi.live', 'pi.usage']);
   assert.deepEqual(opened.frame.omittedDocs, ['pi.provider']);
@@ -188,6 +186,7 @@ test('oversized: a page buffers no bytes; each handle holds at most one export, 
   const size = (r) => Buffer.byteLength(JSON.stringify(r), 'utf8');
   const conversation = {
     watch: async () => ({ value: { conversation: { id: 1 }, entries: records.map(({ id }) => ({ id })), docs: {} }, start() {}, stop: async () => {} }),
+    context: async () => ({ entries: records.map(({ id }) => ({ id })) }),
     entries: async ({ order, minEntryId = 0, maxEntryId = Infinity }, limit, cursor = 0) => {
       const all = records.filter((r) => r.id >= minEntryId && r.id <= maxEntryId);
       if (order === 'descending') all.reverse();

@@ -12,5 +12,11 @@
     "speed": "node bin/trace-analytics.mjs speed",
     "cache-ttl": "node bin/trace-analytics.mjs cache-ttl",
     "compaction": "node bin/trace-analytics.mjs compaction"
+  },
+  "devDependencies": {
+    "@earendil-works/chord": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-durable": "1.5.0",
+    "@earendil-works/pi-schema": "1.5.0"
   }
 }

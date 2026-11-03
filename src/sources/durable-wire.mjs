@@ -8,7 +8,7 @@
 //                         └ watch    bounded frames: conversation, active-context ranges, allowed docs
 //              disconnect ──► closes every handle, watch, and export of the connection
 //
-// The service reads through a public pi-durable Conversation (`entries`, `watch`) that the node
+// The service reads through a public pi-durable Conversation (`entries`, `context`, `watch`) that the node
 // resolves. It never opens a store and never imports pi-durable. Every limit below is a bound on
 // what one request encodes; the values are provisional until the node concurrency run measures them.
 import { createHash, randomUUID } from 'node:crypto';
@@ -113,8 +113,11 @@ export function activeRanges(ids, max = LIMITS.activeRanges) {
 /** Expand ranges back to IDs (client side). */
 export const expandRanges = (active) => active.ranges.flatMap(([a, b]) => Array.from({ length: b - a + 1 }, (_, i) => a + i));
 
-/** One bounded watch frame from a ConversationView. Docs outside the allow list are named, never sent. */
-export function watchFrame(view, { epoch, watchRevision, limits = LIMITS }) {
+/**
+ * One bounded watch frame from a ConversationView. Docs outside the allow list are named, never sent.
+ * `active` holds the active-context entry IDs; the view's entries are only a window over the history.
+ */
+export function watchFrame(view, { epoch, watchRevision, active = view.entries.map((e) => e.id), limits = LIMITS }) {
   const docs = {}, clipped = {}, omittedDocs = [];
   for (const [kind, doc] of Object.entries(view.docs ?? {})) {
     const rule = limits.docs[kind];
@@ -124,7 +127,7 @@ export function watchFrame(view, { epoch, watchRevision, limits = LIMITS }) {
     if (b.clipped) clipped[kind] = b.clipped;
   }
   return { epoch, watchRevision, conversation: view.conversation,
-    active: activeRanges(view.entries.map((e) => e.id), limits.activeRanges), docs,
+    active: activeRanges(active, limits.activeRanges), docs,
     ...(Object.keys(clipped).length ? { clipped } : {}), ...(omittedDocs.length ? { omittedDocs } : {}) };
 }
 
@@ -158,6 +161,14 @@ export function createReaderService({ resolve, context, epoch = 1, limits = LIMI
     stats.closed++;
     try { await h.watch.stop(); } catch {}
     for (const end of h.listeners) try { end('closed'); } catch {}
+  }
+
+  /** Active-context IDs for a frame; re-read only when the view's entries changed (doc-only frames reuse them). */
+  async function activeIds(h, view) {
+    if (h.active && h.activeFor === view.entries) return h.active;
+    const ctx = await h.conversation.context(context);
+    h.activeFor = view.entries;
+    return h.active = ctx.entries.map((e) => e.id);
   }
 
   async function page(h, { order = 'ascending', minEntryId, maxEntryId, limit = 100 }) {
@@ -210,9 +221,11 @@ export function createReaderService({ resolve, context, epoch = 1, limits = LIMI
           fail('disconnected', 'The connection closed during open');
         }
         const handle = `r${nextHandle++}`;
-        handles.set(handle, { connection, conversation, watch, revision: 0, listeners: [], export: null });
+        const h = { connection, conversation, watch, revision: 0, listeners: [], export: null };
+        handles.set(handle, h);
         stats.opened++;
-        return { handle, epoch, frame: watchFrame(watch.value, { epoch, watchRevision: 0, limits }) };
+        const active = await activeIds(h, watch.value);
+        return { handle, epoch, frame: watchFrame(watch.value, { epoch, watchRevision: 0, active, limits }) };
       },
       /** entries({handle, order, minEntryId?, maxEntryId?, limit}) → { items: PageItem[], more, last } */
       async entries({ handle, ...query }) { check(); return page(own(connection, handle), query); },
@@ -263,9 +276,12 @@ export function createReaderService({ resolve, context, epoch = 1, limits = LIMI
         h.watching = true;
         if (onEnd) h.listeners.push(onEnd);
         let stopped = false;
-        h.watch.start(async (view) => {
+        h.watch.start(async (call) => {
+          if (stopped || !handles.has(handle) || call.kind !== 'value') return;
+          const view = call.value;
+          const active = await activeIds(h, view);
           if (stopped || !handles.has(handle)) return;
-          onFrame(watchFrame(view, { epoch, watchRevision: ++h.revision, limits }));
+          onFrame(watchFrame(view, { epoch, watchRevision: ++h.revision, active, limits }));
         });
         return { stop: () => { stopped = true; } };
       },
